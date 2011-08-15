@@ -561,6 +561,7 @@ glick_slice_unref (GlickSlice *slice)
   slice->ref_count--;
   if (slice->ref_count == 0)
     {
+      g_hash_table_remove (glick_slices_by_id, GINT_TO_POINTER (slice->id));
       close (slice->fd);
       g_free (slice);
     }
@@ -644,6 +645,9 @@ glick_mount_ref_free (GlickMountRef *ref)
 {
   glick_mount_refs = g_list_remove (glick_mount_refs, ref);
 
+  if (ref->mount)
+    glick_mount_unref (ref->mount);
+
   close (ref->socket_fd);
   g_free (ref);
 }
@@ -658,15 +662,27 @@ glick_mount_ref_handle_request (GlickMountRef *ref,
 
   memset (&reply, 0, sizeof (reply));
 
-  slice = glick_slice_create (fd, 0);
+  if (ref->mount != NULL)
+    {
+      reply.result = 3;
+      goto out;
+    }
+
   ref->mount = glick_mount_new ();
+  if (ref->mount == NULL)
+    {
+      reply.result = 4;
+      goto out;
+    }
+
+  slice = glick_slice_create (fd, 0);
   glick_mount_add_slice (ref->mount, slice);
 
   reply.result = 0;
   strncpy (reply.name, ref->mount->name, sizeof (reply.name));
 
+ out:
   send (ref->socket_fd, &reply, sizeof (reply), 0);
-
   close (fd);
 }
 

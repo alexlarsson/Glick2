@@ -91,6 +91,11 @@ main (int argc, char *argv[])
   if (nbytes == sizeof (reply))
     printf("MESSAGE FROM SERVER: %d\n", reply.result);
 
+  {
+    int i;
+    scanf ("%d", &i);
+  }
+
   close (socket_fd);
 
   return 0;
