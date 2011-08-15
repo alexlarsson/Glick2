@@ -40,7 +40,7 @@
 
    File:
 
-    +- 15bit slice id  
+    +- 15bit slice id
     |              +- 16bit fixed inode in slice
     v              v
    1xxxxxxxxxxxxxxxyyyyyyyyyyyyyyyy
@@ -53,7 +53,7 @@ typedef struct {
   unsigned long id;
 
   /* Two-way mapping between inodes and paths
-     for directories that we've looked up so 
+     for directories that we've looked up so
      far (that had entries) */
   GHashTable *inode_to_path;
   GHashTable *path_to_inode;
@@ -141,7 +141,7 @@ recv_socket_message (int socket_fd,
   return res;
  }
 
-static int 
+static int
 glick_fs_stat (fuse_ino_t ino, struct stat *stbuf)
 {
   gulong id, subdir;
@@ -149,10 +149,10 @@ glick_fs_stat (fuse_ino_t ino, struct stat *stbuf)
 
   stbuf->st_ino = ino;
 
-  if (!INODE_IS_FILE (ino)) 
+  if (!INODE_IS_FILE (ino))
     {
       /* Directory */
-      switch (ino) 
+      switch (ino)
 	{
 	case 0:
 	  return -1;
@@ -176,7 +176,7 @@ glick_fs_stat (fuse_ino_t ino, struct stat *stbuf)
 	  if (mount == NULL)
 	    return -1;
 
-	  if (subdir == 0) 
+	  if (subdir == 0)
 	    {
 	      /* Toplevel of "submount" */
 	      stbuf->st_mode = S_IFDIR | 0755;
@@ -222,7 +222,7 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
   GlickMount *mount;
 
   g_print ("glick_fs_lookip %d %s\n", (int)parent, name);
- 
+
   if (parent == ROOT_INODE)
     {
       if (socket_created &&
@@ -298,7 +298,7 @@ glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
       fuse_reply_err (req, ENOTDIR);
       return;
     }
-  
+
   dirbuf_add (req, &b, ".", ino);
 
   if (ino == ROOT_INODE)
@@ -309,8 +309,8 @@ glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
       for (l = glick_mounts; l != NULL; l = l->next)
 	{
 	  GlickMount *mount = l->data;
-	  
-	  dirbuf_add (req, &b, mount->name, 
+
+	  dirbuf_add (req, &b, mount->name,
 		      MOUNT_INODE_FROM_ID(mount->id));
 	}
       reply_buf_limited (req, b.p, b.size, off, size);
@@ -350,7 +350,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 {
   g_print ("glick_fs_open %d\n", (int)ino);
 
-  if (!INODE_IS_FILE (ino)) 
+  if (!INODE_IS_FILE (ino))
     fuse_reply_err (req, EISDIR);
   else if ((fi->flags & 3) != O_RDONLY)
     fuse_reply_err (req, EACCES);
@@ -389,7 +389,7 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
       return;
     }
 
-  if (socket_created) 
+  if (socket_created)
     {
       fuse_reply_err (req, EEXIST);
       return;
