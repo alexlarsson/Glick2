@@ -423,6 +423,8 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
   GlickSlice *slice;
   int id, local;
 
+  fi->keep_cache = 1;
+
   g_print ("glick_fs_open %d\n", (int)ino);
 
   if (!INODE_IS_FILE (ino))
