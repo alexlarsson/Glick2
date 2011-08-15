@@ -4,10 +4,10 @@ PREFIX=/usr/local
 BINDIR=${PREFIX}/bin
 LIBDIR=${PREFIX}/lib
 
-all: private-mount glick2 to_c
+all: private-mount glick2 to_c glick_fs
 
 clean:
-	rm -f private-mount glick2 to_c
+	rm -f private-mount glick2 to_c glick_fs
 
 install: private-mount
 	install -m 4755 -o root private-mount ${BINDIR}
