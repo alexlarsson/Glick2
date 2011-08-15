@@ -3,6 +3,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include "glick.h"
 
@@ -40,42 +43,55 @@ send_message (int target_socket,
  }
 
 int
-main (void)
+main (int argc, char *argv[])
 {
   struct sockaddr_un address = {0};
- int socket_fd, nbytes;
- GlickMountRequestMsg msg;
- GlickMountRequestReply reply;
+  int socket_fd, nbytes;
+  GlickMountRequestMsg msg;
+  GlickMountRequestReply reply;
+  int fd;
+  char *file;
 
- socket_fd = socket (PF_UNIX, SOCK_SEQPACKET, 0);
- if (socket_fd < 0)
-   {
-     perror("socket()");
-     return 1;
-   }
+  socket_fd = socket (PF_UNIX, SOCK_SEQPACKET, 0);
+  if (socket_fd < 0)
+    {
+      perror("socket()");
+      return 1;
+    }
 
- address.sun_family = AF_UNIX;
- snprintf(address.sun_path, sizeof (address.sun_path), "/tmp/test/socket");
+  address.sun_family = AF_UNIX;
+  snprintf(address.sun_path, sizeof (address.sun_path), "/tmp/test/socket");
 
- if (connect (socket_fd,
-	      (struct sockaddr *) &address,
-	      sizeof(struct sockaddr_un)) != 0)
-   {
-     perror ("connect()");
-     return 1;
-   }
+  if (connect (socket_fd,
+	       (struct sockaddr *) &address,
+	       sizeof(struct sockaddr_un)) != 0)
+    {
+      perror ("connect()");
+      return 1;
+    }
 
- msg.version = 0;
- msg.padding = 0;
- msg.offset = 0;
+  msg.version = 0;
+  msg.padding = 0;
+  msg.offset = 0;
 
- send_message (socket_fd, (char *)&msg, sizeof (msg), 1);
+  file = "/bin/sh";
+  if (argc > 1)
+    file = argv[1];
 
- nbytes = recv (socket_fd, (char *)&reply, sizeof (reply), 0);
- if (nbytes == sizeof (reply))
-   printf("MESSAGE FROM SERVER: %d\n", reply.result);
+  fd = open (file, O_RDONLY);
+  if (fd == -1)
+    {
+      perror ("open file");
+      return 1;
+    }
 
- close (socket_fd);
+  send_message (socket_fd, (char *)&msg, sizeof (msg), fd);
 
- return 0;
+  nbytes = recv (socket_fd, (char *)&reply, sizeof (reply), 0);
+  if (nbytes == sizeof (reply))
+    printf("MESSAGE FROM SERVER: %d\n", reply.result);
+
+  close (socket_fd);
+
+  return 0;
 }

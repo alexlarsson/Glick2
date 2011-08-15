@@ -9,4 +9,5 @@ typedef struct {
 typedef struct {
   uint32_t result;
   uint32_t padding;
+  char name[128];
 } GlickMountRequestReply;

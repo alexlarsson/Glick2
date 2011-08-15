@@ -1,4 +1,4 @@
-CFLAGS=-Wall -O1
+CFLAGS=-Wall -O1 -g
 
 PREFIX=/usr/local
 BINDIR=${PREFIX}/bin
