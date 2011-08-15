@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <string.h>
 
+#include "glick.h"
+
 int
 send_message (int target_socket,
 	      char *message,
@@ -42,7 +44,8 @@ main (void)
 {
   struct sockaddr_un address = {0};
  int socket_fd, nbytes;
- char buffer[256];
+ GlickMountRequestMsg msg;
+ GlickMountRequestReply reply;
 
  socket_fd = socket (PF_UNIX, SOCK_SEQPACKET, 0);
  if (socket_fd < 0)
@@ -54,21 +57,23 @@ main (void)
  address.sun_family = AF_UNIX;
  snprintf(address.sun_path, sizeof (address.sun_path), "/tmp/test/socket");
 
- if (connect (socket_fd, 
-	      (struct sockaddr *) &address, 
+ if (connect (socket_fd,
+	      (struct sockaddr *) &address,
 	      sizeof(struct sockaddr_un)) != 0)
    {
      perror ("connect()");
      return 1;
    }
 
- nbytes = snprintf (buffer, 256, "ping");
- send_message (socket_fd, buffer, nbytes, 1);
- 
- nbytes = read (socket_fd, buffer, 256);
- buffer[nbytes] = 0;
+ msg.version = 0;
+ msg.padding = 0;
+ msg.offset = 0;
 
- printf("MESSAGE FROM SERVER: %s\n", buffer);
+ send_message (socket_fd, (char *)&msg, sizeof (msg), 1);
+
+ nbytes = recv (socket_fd, (char *)&reply, sizeof (reply), 0);
+ if (nbytes == sizeof (reply))
+   printf("MESSAGE FROM SERVER: %d\n", reply.result);
 
  close (socket_fd);
 

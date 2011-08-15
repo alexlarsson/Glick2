@@ -14,6 +14,8 @@
 #include <assert.h>
 #include <glib.h>
 
+#include "glick.h"
+
 /* Inodes:
    32 bits
 
@@ -439,6 +441,21 @@ glick_mount_ref_free (GlickMountRef *ref)
   g_free (ref);
 }
 
+void
+glick_mount_ref_handle_request (GlickMountRef *ref,
+				GlickMountRequestMsg *request,
+				int fd)
+{
+  GlickMountRequestReply reply;
+
+  memset (&reply, 0, sizeof (reply));
+
+  reply.result = 0;
+  send (ref->socket_fd, &reply, sizeof (reply), 0);
+
+  close (fd);
+}
+
 
 int
 main_loop (struct fuse_session *se)
@@ -524,11 +541,31 @@ main_loop (struct fuse_session *se)
 	  else if (polls[i].revents & POLLIN)
 	    {
 	      int res, passed_fd;
-	      char buffer[128];
+	      GlickMountRequestMsg request;
+	      GlickMountRequestReply reply;
 
-	      res = recv_socket_message (ref->socket_fd, buffer, sizeof (buffer), &passed_fd);
-	      g_print ("recvs: %d %d\n", res, passed_fd);
-	      write (passed_fd, "pong\n", 5);
+	      memset (&reply, 0, sizeof (reply));
+	      res = recv_socket_message (ref->socket_fd, (char *)&request, sizeof (request), &passed_fd);
+	      if (res != -1)
+		{
+		  if (passed_fd == -1)
+		    {
+		      fprintf (stderr, "No fd passed\n");
+		      reply.result = 1;
+		      send (ref->socket_fd, &reply, sizeof (reply), 0);
+		    }
+		  else if (res != sizeof (request))
+		    {
+		      fprintf (stderr, "Invalid glick request size\n");
+		      reply.result = 2;
+		      close (passed_fd);
+		      send (ref->socket_fd, &reply, sizeof (reply), 0);
+		    }
+		  else
+		    {
+		      glick_mount_ref_handle_request (ref, &request, passed_fd);
+		    }
+		}
 	    }
 	}
 

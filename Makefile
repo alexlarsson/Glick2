@@ -24,5 +24,5 @@ sh.h:	/bin/sh to_c
 glick2: glick2.c sh.h
 	gcc ${CFLAGS} `pkg-config fuse --cflags --libs` glick2.c -o glick2 -DBINDIR=\"${BINDIR}\"
 
-glick_fs: glick_fs.c
+glick_fs: glick_fs.c glick.h
 	gcc ${CFLAGS} `pkg-config fuse glib-2.0 --cflags --libs` glick_fs.c -o glick_fs
