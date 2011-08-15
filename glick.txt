@@ -1,0 +1,65 @@
+Basic setup:
+      mount --make-rshared /
+      something mounted on /opt/glick (could be a bind to itself, could be a session glick)
+      
+
+main glick fs:
+     mount initially empty fs at ~/.glick
+     make a AF_UNIX SEQPACKET socket at ~/.glick/ (fork to bind the socket)
+     loop, looking at the session fd(s) and the socket fd:
+     	   serve fuse files
+	   accept packets from socket, mounting subdirs, unmounting on socket close
+
+
+bundle:
+   socket = connect to ~/.glick/socket
+   fd = open (bundle)
+   pass fd to socket, requesting a mount => subdir
+   close (fd)
+
+   make tempdir     
+   fork:
+     child:
+       fuse_mount at tempdir
+       signal parent
+       wait for parent
+       unmount tempdir
+       handle fuse
+
+
+     parent:
+       close (socket)
+       If /opt/glick is not a mount, bind mount to itself
+       unshare (newns)
+       make private /opt/glick
+       bind mount tempdir to /opt/glick
+       bind mount ~/.glick/$subdir to /opt/glick
+       
+       exec child in /opt/glick       
+       
+    
+
+
+
+
+
+
+
+elf binary w std code + data
+std code:
+  exec glick2 with existing argv
+
+glick2:
+  fork 
+     create tempdir for mount
+     create pipe1
+     create pipe2
+     child:
+       mount fuse 
+       write pipe1_w
+       read pipe2_r
+       unmount and rmdir tmpdir
+       handle ops, reading data from argv[0]
+     parent:
+       read pipe1_r
+       exec private-mount $tempdir "default-bin" -fd $pipe2_w argv
