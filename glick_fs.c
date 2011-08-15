@@ -63,7 +63,7 @@ typedef struct {
 } GlickMount;
 
 typedef struct {
-  int fd;
+  int socket_fd;
   GlickMount *mount;
 }  GlickMountRef;
 
@@ -117,7 +117,10 @@ recv_socket_message (int socket_fd,
   res = recvmsg (socket_fd, &socket_message,
 		 MSG_CMSG_CLOEXEC);
   if (res < 0)
-    return -1;
+    {
+      perror ("recvmsg");
+      return -1;
+    }
 
   if ((socket_message.msg_flags & MSG_CTRUNC) == MSG_CTRUNC)
     {
@@ -414,6 +417,29 @@ fuse_lowlevel_ops glick_fs_oper = {
   .mknod	= glick_fs_mknod,
 };
 
+GlickMountRef *
+glick_mount_ref_new (int fd)
+{
+  GlickMountRef *ref;
+
+  ref = g_new0 (GlickMountRef, 1);
+  ref->socket_fd = fd;
+
+  glick_mount_refs = g_list_prepend (glick_mount_refs, ref);
+
+  return ref;
+}
+
+void
+glick_mount_ref_free (GlickMountRef *ref)
+{
+  glick_mount_refs = g_list_remove (glick_mount_refs, ref);
+
+  close (ref->socket_fd);
+  g_free (ref);
+}
+
+
 int
 main_loop (struct fuse_session *se)
 {
@@ -422,7 +448,10 @@ main_loop (struct fuse_session *se)
   int fuse_fd = fuse_chan_fd (ch);
   size_t bufsize = fuse_chan_bufsize (ch);
   char *buf = (char *) malloc (bufsize);
-  struct pollfd polls[2];
+  struct pollfd *polls;
+  int n_polls, polls_needed, i;
+  GlickMountRef *ref;
+  GList *l, *next;
 
   if (!buf)
     {
@@ -430,10 +459,19 @@ main_loop (struct fuse_session *se)
       return -1;
     }
 
+  n_polls = 16;
+  polls = g_new (struct pollfd, n_polls);
+
   while (!fuse_session_exited (se))
     {
       struct fuse_chan *tmpch = ch;
-      int i;
+
+      polls_needed = 2 + g_list_length (glick_mount_refs);
+      if (polls_needed > n_polls)
+	{
+	  n_polls = polls_needed;
+	  polls = g_renew (struct pollfd, polls, n_polls);
+	}
 
       i = 0;
       polls[i].fd = fuse_fd;
@@ -449,6 +487,16 @@ main_loop (struct fuse_session *se)
       polls[i].revents = 0;
       i++;
 
+      for (l = glick_mount_refs; l != NULL; l = l->next)
+	{
+	  ref = l->data;
+
+	  polls[i].fd = ref->socket_fd;
+	  polls[i].events = POLLIN;
+	  polls[i].revents = 0;
+	  i++;
+	}
+
       poll (polls, i, -1);
 
       if (polls[0].revents != 0)
@@ -461,29 +509,51 @@ main_loop (struct fuse_session *se)
 	  fuse_session_process (se, buf, res, tmpch);
 	}
 
-      if (master_socket_ready_pipe != 0 &&
-	  polls[1].revents != 0)
+      /* Handle these before any new mount refs, as that may change the order of
+	 the ref list */
+      for (l = glick_mount_refs, i = 2; l != NULL; l = next, i++)
 	{
-	  res = listen (master_socket, 5);
-	  if (res == -1)
-	    perror ("listen");
+	  ref = l->data;
+	  next = l->next;
 
-	  close (master_socket_ready_pipe);
-	  master_socket_ready_pipe = 0;
+	  if (polls[i].revents & POLLHUP)
+	    {
+	      g_print ("socket %d hung up\n", i);
+	      glick_mount_ref_free (ref);
+	    }
+	  else if (polls[i].revents & POLLIN)
+	    {
+	      int res, passed_fd;
+	      char buffer[128];
+
+	      res = recv_socket_message (ref->socket_fd, buffer, sizeof (buffer), &passed_fd);
+	      g_print ("recvs: %d %d\n", res, passed_fd);
+	      write (passed_fd, "pong\n", 5);
+	    }
 	}
-      else if (master_socket_ready_pipe == 0 &&
-	  polls[1].revents != 0)
-	{
-	  int res, passed_fd;
-	  char buffer[128];
 
-	  res = accept (master_socket, NULL, NULL);
-	  g_print ("accept: %d\n", res);
-	  if (res == -1)
-	    perror ("accept");
-	  res = recv_socket_message (res, buffer, sizeof (buffer), &passed_fd);
-	  g_print ("recvs: %d %d\n", res, passed_fd);
-	  write (passed_fd, "pong\n", 5);
+      if (polls[1].revents != 0)
+	{
+	  if (master_socket_ready_pipe != 0)
+	    {
+	      /* Waiting for master socket to be ready */
+	      res = listen (master_socket, 5);
+	      if (res == -1)
+		perror ("listen");
+
+	      close (master_socket_ready_pipe);
+	      master_socket_ready_pipe = 0;
+	    }
+	  else
+	    {
+	      int res;
+	      res = accept (master_socket, NULL, NULL);
+
+	      if (res == -1)
+		perror ("accept");
+	      else
+		glick_mount_ref_new (res);
+	    }
 	}
     }
 
