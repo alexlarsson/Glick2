@@ -19,7 +19,7 @@ to_c: to_c.c
 	gcc -o to_c to_c.c ${CFLAGS}
 
 glick2: glick2.c
-	gcc ${CFLAGS} `pkg-config fuse --cflags --libs` glick2.c -o glick2 -DBINDIR=\"${BINDIR}\"
+	gcc ${CFLAGS} `pkg-config fuse glib-2.0 --cflags --libs` glick2.c -o glick2 -DBINDIR=\"${BINDIR}\"
 
 glick_fs: glick_fs.c glick.h
 	gcc ${CFLAGS} `pkg-config fuse glib-2.0 --cflags --libs` glick_fs.c -o glick_fs

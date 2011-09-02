@@ -3,6 +3,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fuse_lowlevel.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +13,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <assert.h>
+#include <glib.h>
+
+#include "glick.h"
 
 static void
 dummy_getattr (fuse_req_t req, fuse_ino_t ino,
@@ -135,6 +140,7 @@ run_dummy_fs (char *argv0,
 	      /* Wait for the parent to bind mount the filesystem into
 	       * its own namespace */
 	      res = read (wait_to_unmount_fd, &b, 1);
+	      printf ("wait_to_unmount res: %d\n", (int)res);
 
 	      /* Unmount the fuse filesystem in the global namespace
 	       * so that it will be auto-unmounted when the namespace dies */
@@ -160,6 +166,61 @@ run_dummy_fs (char *argv0,
 }
 
 int
+send_message (int target_socket,
+	      char *message,
+	      size_t message_size,
+	      int fd_to_send)
+ {
+   struct msghdr socket_message;
+   struct iovec io_vector[1];
+   struct cmsghdr *control_message = NULL;
+   char ancillary_buffer[CMSG_SPACE(sizeof (int))];
+
+   io_vector[0].iov_base = message;
+   io_vector[0].iov_len = message_size;
+
+   /* initialize socket message */
+   memset (&socket_message, 0, sizeof (struct msghdr));
+   socket_message.msg_iov = io_vector;
+   socket_message.msg_iovlen = 1;
+
+   memset (ancillary_buffer, 0, sizeof (ancillary_buffer));
+   socket_message.msg_control = ancillary_buffer;
+   socket_message.msg_controllen = sizeof (ancillary_buffer);
+
+   /* initialize a single ancillary data element for fd passing */
+   control_message = CMSG_FIRSTHDR(&socket_message);
+   control_message->cmsg_level = SOL_SOCKET;
+   control_message->cmsg_type = SCM_RIGHTS;
+   control_message->cmsg_len = CMSG_LEN(sizeof(int));
+   *((int *) CMSG_DATA(control_message)) = fd_to_send;
+
+   return sendmsg (target_socket, &socket_message, 0);
+ }
+
+int
+connect_to_socket (const char *path)
+{
+  struct sockaddr_un address = {0};
+  int socket_fd;
+
+  socket_fd = socket (PF_UNIX, SOCK_SEQPACKET, 0);
+  if (socket_fd < 0)
+    return -1;
+
+  address.sun_family = AF_UNIX;
+  snprintf(address.sun_path, sizeof (address.sun_path), path);
+
+  if (connect (socket_fd,
+	       (struct sockaddr *) &address,
+	       sizeof(struct sockaddr_un)) != 0)
+    return -1;
+
+  return socket_fd;
+}
+
+
+int
 main (int argc, char *argv[])
 {
   int fuse_mounted_pipe[2];
@@ -169,14 +230,73 @@ main (int argc, char *argv[])
   char b;
   char **child_argv;
   int i, j;
-  char mountpoint[] = "/tmp/.glick_XXXXXX";
+  char dummy_mountpoint[] = "/tmp/.glick_XXXXXX";
   char fd_buf[21]; // Size enough for a 64bit fd...
+  int exe_fd;
+  const char *homedir;
+  char *glick_mount, *glick_socket, *glick_subdir;
+  int socket_fd;
+  ssize_t nbytes;
+  GlickMountRequestMsg msg;
+  GlickMountRequestReply reply;
+
+  if (argc < 2)
+    {
+      fprintf (stderr, "No image specified\n");
+      return 1;
+    }
+
+  exe_fd = open (argv[1], O_RDONLY);
+  if (exe_fd == -1)
+    {
+      fprintf (stderr, "Unable to open %s\n", argv[1]);
+      return 1;
+    }
+
+  homedir = g_get_home_dir ();
+  glick_mount = g_build_filename (homedir, ".glick", NULL);
+  glick_socket = g_build_filename (glick_mount, "socket", NULL);
+
+  socket_fd = connect_to_socket (glick_socket);
+  if (socket_fd == -1)
+    {
+      fprintf (stderr, "Unable to contact glick filesystem\n");
+      return 1;
+    }
+
+  g_free (glick_socket);
+
+  msg.version = 0;
+  msg.padding = 0;
+  msg.offset = 0;
+
+  if (send_message (socket_fd, (char *)&msg, sizeof (msg), exe_fd) == -1)
+    {
+      fprintf (stderr, "Unable to send message to glick filesystem\n");
+      return 1;
+    }
+  close (exe_fd);
+
+  nbytes = recv (socket_fd, (char *)&reply, sizeof (reply), 0);
+  if (nbytes < sizeof (reply))
+    {
+      fprintf (stderr, "Unexpected reply size recieved\n");
+      return 1;
+    }
+
+  if (reply.result != 0)
+    {
+      fprintf (stderr, "Error mounting image %d\n", reply.result);
+      return 1;
+    }
+
+  glick_subdir = g_build_filename (glick_mount, reply.name, NULL);
 
   if (pipe (fuse_mounted_pipe) != 0)
     return 1;
   if (pipe (internal_mount_done_pipe) != 0)
     return 1;
-  if (mkdtemp (mountpoint) == NULL)
+  if (mkdtemp (dummy_mountpoint) == NULL)
     return 1;
 
   pid = fork ();
@@ -184,9 +304,10 @@ main (int argc, char *argv[])
     {
       close (fuse_mounted_pipe[READ_SIDE]);
       close (internal_mount_done_pipe[WRITE_SIDE]);
-      return run_dummy_fs (argv[0], mountpoint, fuse_mounted_pipe[WRITE_SIDE], internal_mount_done_pipe[READ_SIDE]);
+      return run_dummy_fs (argv[0], dummy_mountpoint, fuse_mounted_pipe[WRITE_SIDE], internal_mount_done_pipe[READ_SIDE]);
     }
 
+  close (socket_fd);
   close (fuse_mounted_pipe[WRITE_SIDE]);
   close (internal_mount_done_pipe[READ_SIDE]);
 
@@ -195,19 +316,21 @@ main (int argc, char *argv[])
   close (fuse_mounted_pipe[READ_SIDE]);
 
   /* Spawn the make-private-namespace handler */
-  child_argv = malloc ((1 + 3 + (argc - 1) + 1 ) * sizeof (char *));
+  child_argv = malloc ((1 + 5 + (argc - 1) + 1 ) * sizeof (char *));
   i = 0;
   child_argv[i++] = BINDIR "/private-mount";
-  child_argv[i++] = mountpoint;
+  child_argv[i++] = glick_subdir;
   child_argv[i++] = "/bin/sh"; /* TODO: should be the fs-internal binary to run */
   /* Make it write to internal_mount_done_pipe when internals mounts are set up to wake the fuse
      child */
+  child_argv[i++] = "-extra";
+  child_argv[i++] = dummy_mountpoint;
   child_argv[i++] = "-fd";
 
   snprintf (fd_buf, sizeof (fd_buf), "%d", internal_mount_done_pipe[WRITE_SIDE]);
   fd_buf[sizeof(fd_buf)] = 0; // Ensure zero termination
   child_argv[i++] = fd_buf;
-  for (j = 1; j < argc; j++)
+  for (j = 2; j < argc; j++)
     child_argv[i++] = argv[j];
   child_argv[i++] = NULL;
 
