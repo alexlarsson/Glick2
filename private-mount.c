@@ -80,6 +80,8 @@ main (int argc,
 
   if (extra_mount_source != NULL)
     {
+      mount (extra_mount_source, extra_mount_source,
+	     NULL, MS_PRIVATE, NULL);
       res = mount (extra_mount_source, GLICK_PREFIX,
 		   NULL, MS_BIND, NULL);
       if (res != 0) {
