@@ -14,9 +14,10 @@ main (int argc,
       char **argv)
 {
   int res;
-  char *path;
+  char *mount_source;
   char *executable_relative;
   char *executable;
+  char *extra_mount_source;
   char **child_argv;
   int i, j, fd, argv_offset;
   int mount_count;
@@ -29,27 +30,30 @@ main (int argc,
     return 1;
   }
 
-  fd = 0;
   argv_offset = 1;
-  path = argv[argv_offset++];
+  mount_source = argv[argv_offset++];
   executable_relative = argv[argv_offset++];
 
-  if (argc >= 5 &&
-      argv[argv_offset] != NULL &&
-      argv[argv_offset+1] != NULL &&
-      strcmp (argv[argv_offset], "-fd") == 0) {
-    fd = atoi(argv[argv_offset+1]);
-    if (fd != 0) {
+  fd = 0;
+  extra_mount_source = 0;
+
+  while (argv_offset + 1 < argc)
+    {
+      if (strcmp (argv[argv_offset], "-fd") == 0)
+	fd = atoi (argv[argv_offset+1]);
+      else if (strcmp (argv[argv_offset], "-extra") == 0)
+	extra_mount_source = argv[argv_offset+1];
+      else
+	break;
+
       argv_offset += 2;
     }
-  }
 
   res = unshare (CLONE_NEWNS);
   if (res != 0) {
     perror ("Creating new namespace failed");
     return 1;
   }
-
 
   mount_count = 0;
   res = mount (GLICK_PREFIX, GLICK_PREFIX,
@@ -71,40 +75,51 @@ main (int argc,
 
   if (res != 0) {
     perror ("Failed to make prefix namespace private");
-    while (mount_count-- > 0)
-      umount (GLICK_PREFIX);
-    return 1;
+    goto error_out;
   }
 
-  res = mount (path, GLICK_PREFIX,
+  if (extra_mount_source != NULL)
+    {
+      res = mount (extra_mount_source, GLICK_PREFIX,
+		   NULL, MS_BIND, NULL);
+      if (res != 0) {
+	perror ("Failed to bind the extra source directory");
+	goto error_out;
+      }
+      mount_count++; /* Extra mount succeeded */
+    }
+
+  res = mount (mount_source, GLICK_PREFIX,
 	       NULL, MS_BIND, NULL);
   if (res != 0) {
     perror ("Failed to bind the source directory");
-    while (mount_count-- > 0)
-      umount (GLICK_PREFIX);
-    return 1;
+    goto error_out;
   }
 
   /* Now we have everything we need CAP_SYS_ADMIN for, so drop setuid */
   setuid (getuid ());
 
-  if (fd != 0) {
-    char c = 'x';
-    write (fd, &c, 1);
-  }
+  if (fd != 0)
+    {
+      char c = 'x';
+      write (fd, &c, 1);
+    }
 
   executable = NULL;
   child_argv = NULL;
 
-  if (executable_relative[0] == '/') {
+  if (executable_relative[0] == '/')
     executable = executable_relative;
-  } else {
-    executable = malloc (strlen (GLICK_PREFIX) + strlen (executable_relative) + 1);
-    if (executable != NULL) {
-      strcpy (executable, GLICK_PREFIX);
-      strcat (executable, executable_relative);
+  else
+    {
+      executable = malloc (strlen (GLICK_PREFIX) + strlen (executable_relative) + 1);
+      if (executable != NULL)
+	{
+	  strcpy (executable, GLICK_PREFIX);
+	  strcat (executable, executable_relative);
+	}
     }
-  }
+
   if (executable == NULL)
     goto oom;
 
@@ -114,9 +129,8 @@ main (int argc,
 
   j = 0;
   child_argv[j++] = executable;
-  for (i = argv_offset; i < argc; i++) {
+  for (i = argv_offset; i < argc; i++)
     child_argv[j++] = argv[i];
-  }
   child_argv[j++] = NULL;
 
   return execv (executable, child_argv);
@@ -126,7 +140,9 @@ main (int argc,
     free (executable);
 
   fprintf (stderr, "Out of memory.\n");
-  umount (GLICK_PREFIX);
-  umount (GLICK_PREFIX);
+
+ error_out:
+  while (mount_count-- > 0)
+    umount (GLICK_PREFIX);
   return 1;
 }
