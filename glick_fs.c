@@ -837,13 +837,17 @@ main (int argc, char *argv[])
   struct fuse_chan *ch;
   char *mountpoint;
   int err = -1;
+  const char *homedir;
 
   glick_mounts_by_id = g_hash_table_new (g_direct_hash, g_direct_equal);
   glick_mounts_by_name = g_hash_table_new (g_str_hash, g_str_equal);
   glick_slices_by_id = g_hash_table_new (g_direct_hash, g_direct_equal);
 
-  if (fuse_parse_cmdline (&args, &mountpoint, NULL, NULL) != -1 &&
-      (ch = fuse_mount (mountpoint, &args)) != NULL)
+  homedir = g_get_home_dir ();
+  mountpoint = g_build_filename (homedir, ".glick", NULL);
+  mkdir (mountpoint, 0700);
+
+  if ((ch = fuse_mount (mountpoint, NULL)) != NULL)
     {
       struct fuse_session *se;
 
