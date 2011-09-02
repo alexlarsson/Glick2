@@ -140,7 +140,6 @@ run_dummy_fs (char *argv0,
 	      /* Wait for the parent to bind mount the filesystem into
 	       * its own namespace */
 	      res = read (wait_to_unmount_fd, &b, 1);
-	      printf ("wait_to_unmount res: %d\n", (int)res);
 
 	      /* Unmount the fuse filesystem in the global namespace
 	       * so that it will be auto-unmounted when the namespace dies */
