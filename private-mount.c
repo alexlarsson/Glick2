@@ -82,7 +82,7 @@ main (int argc,
     {
       mount (extra_mount_source, extra_mount_source,
 	     NULL, MS_PRIVATE, NULL);
-      res = mount (extra_mount_source, GLICK_PREFIX,
+      res = mount (extra_mount_source, extra_mount_source,
 		   NULL, MS_BIND, NULL);
       if (res != 0) {
 	perror ("Failed to bind the extra source directory");
