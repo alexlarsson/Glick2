@@ -18,10 +18,7 @@ private-mount: private-mount.c
 to_c: to_c.c
 	gcc -o to_c to_c.c ${CFLAGS}
 
-sh.h:	/bin/sh to_c
-	./to_c /bin/sh  binsh > sh.h
-
-glick2: glick2.c sh.h
+glick2: glick2.c
 	gcc ${CFLAGS} `pkg-config fuse --cflags --libs` glick2.c -o glick2 -DBINDIR=\"${BINDIR}\"
 
 glick_fs: glick_fs.c glick.h
