@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #define GLICK_PREFIX "/opt/glick"
 
@@ -18,6 +19,7 @@ main (int argc,
   char *executable;
   char **child_argv;
   int i, j, fd, argv_offset;
+  int mount_count;
 
   /* The initial code is run with a high permission euid
      (at least CAP_SYS_ADMIN), so take lots of care. */
@@ -48,25 +50,38 @@ main (int argc,
     return 1;
   }
 
+
+  mount_count = 0;
   res = mount (GLICK_PREFIX, GLICK_PREFIX,
-	       NULL, MS_BIND, NULL);
+	       NULL, MS_PRIVATE, NULL);
+  if (res != 0 && errno == EINVAL) {
+    /* Maybe if failed because there is no mount
+       to be made private at that point, letsa
+       add a bind mount there. */
+    res = mount (GLICK_PREFIX, GLICK_PREFIX,
+		 NULL, MS_BIND, NULL);
+    /* And try again */
+    if (res == 0)
+      {
+	mount_count++; /* Bind mount succeeded */
+	res = mount (GLICK_PREFIX, GLICK_PREFIX,
+		     NULL, MS_PRIVATE, NULL);
+      }
+  }
+
   if (res != 0) {
-    perror ("Bind mount failed");
+    perror ("Failed to make prefix namespace private");
+    while (mount_count-- > 0)
+      umount (GLICK_PREFIX);
     return 1;
   }
 
-  res = mount (GLICK_PREFIX, GLICK_PREFIX,
-	       NULL, MS_PRIVATE, NULL);
-  if (res != 0) {
-    perror ("Failed to make prefix namespace private");
-    umount (GLICK_PREFIX);
-    return 1;
-  }
   res = mount (path, GLICK_PREFIX,
 	       NULL, MS_BIND, NULL);
   if (res != 0) {
     perror ("Failed to bind the source directory");
-    umount (GLICK_PREFIX);
+    while (mount_count-- > 0)
+      umount (GLICK_PREFIX);
     return 1;
   }
 
