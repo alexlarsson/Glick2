@@ -130,6 +130,7 @@ run_dummy_fs (char *argv0,
 	      /* Mounted the filesystem, tell the parent */
 	      wrote_ok = 1;
 	      write (mounted_signal_fd, &c_ok, 1);
+	      close (mounted_signal_fd);
 
 	      /* Wait for the parent to bind mount the filesystem into
 	       * its own namespace */
@@ -150,7 +151,10 @@ run_dummy_fs (char *argv0,
     }
 
   if (!wrote_ok)
-    write (mounted_signal_fd, &c_err, 1);
+    {
+      write (mounted_signal_fd, &c_err, 1);
+      close (mounted_signal_fd);
+    }
 
   return 0;
 }
