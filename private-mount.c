@@ -95,6 +95,7 @@ main (int argc,
     perror ("Failed to bind the source directory");
     goto error_out;
   }
+  mount_count++; /* Normal mount succeeded */
 
   /* Now we have everything we need CAP_SYS_ADMIN for, so drop setuid */
   setuid (getuid ());
