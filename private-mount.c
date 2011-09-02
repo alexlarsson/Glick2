@@ -9,7 +9,7 @@
 #define GLICK_PREFIX "/opt/glick"
 
 int
-main (int argc, 
+main (int argc,
       char **argv)
 {
   int res;
@@ -26,7 +26,7 @@ main (int argc,
     fprintf (stderr, "Not enough arguments. Need source dir and executable relative path.\n");
     return 1;
   }
-  
+
   fd = 0;
   argv_offset = 1;
   path = argv[argv_offset++];
@@ -48,21 +48,21 @@ main (int argc,
     return 1;
   }
 
-  res = mount (GLICK_PREFIX, GLICK_PREFIX, 
+  res = mount (GLICK_PREFIX, GLICK_PREFIX,
 	       NULL, MS_BIND, NULL);
   if (res != 0) {
     perror ("Bind mount failed");
     return 1;
   }
 
-  res = mount (GLICK_PREFIX, GLICK_PREFIX, 
+  res = mount (GLICK_PREFIX, GLICK_PREFIX,
 	       NULL, MS_PRIVATE, NULL);
   if (res != 0) {
     perror ("Failed to make prefix namespace private");
     umount (GLICK_PREFIX);
     return 1;
   }
-  res = mount (path, GLICK_PREFIX, 
+  res = mount (path, GLICK_PREFIX,
 	       NULL, MS_BIND, NULL);
   if (res != 0) {
     perror ("Failed to bind the source directory");
@@ -96,7 +96,7 @@ main (int argc,
   child_argv = malloc ((1 + argc - argv_offset + 1) * sizeof (char *));
   if (child_argv == NULL)
     goto oom;
-  
+
   j = 0;
   child_argv[j++] = executable;
   for (i = argv_offset; i < argc; i++) {
@@ -115,4 +115,3 @@ main (int argc,
   umount (GLICK_PREFIX);
   return 1;
 }
-
