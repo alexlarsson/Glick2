@@ -52,6 +52,7 @@ slurp_files (const char *full_path, const char *relative_path, const char *name)
 	  child_path = g_build_filename (full_path, child_name, NULL);
 	  child_relative_path = g_build_filename (relative_path, child_name, NULL);
 	  child = slurp_files (child_path, child_relative_path, child_name);
+	  child->parent = file;
 	  g_free (child_relative_path);
 	  g_free (child_path);
 	  if (child != NULL)
@@ -201,12 +202,11 @@ collect_inode (SFile *file, void *user_data)
   if (S_ISDIR (file->statbuf.st_mode)) {
     int n_entries = g_list_length (file->children);
     inode->size = GUINT64_TO_LE (n_entries);
-    inode->offset = GUINT64_TO_LE (inode_data->last_dirent * sizeof (GlickSliceDirEntry));
+    inode->offset = GUINT64_TO_LE (inode_data->last_dirent);
     for (l = file->children, i = 0; l != NULL; l = l->next, i++) {
       SFile *child = l->data;
       inode_data->dirents[inode_data->last_dirent++].inode = GUINT16_TO_LE (child->inode);
     }
-    inode_data->dirents[inode_data->last_dirent++].inode = GUINT16_TO_LE (INVALID_INODE);
   } else if (S_ISREG (file->statbuf.st_mode)) {
     inode->size = GUINT32_TO_LE (file->statbuf.st_size);
     inode->offset = GUINT64_TO_LE (inode_data->data_offset);
@@ -314,8 +314,8 @@ main (int argc, char *argv[])
   inode_data.hash = g_new (GlickSliceHash, n_hashes);
   memset (inode_data.hash, 0xff, sizeof (GlickSliceHash) * n_hashes);
   inode_data.inodes = g_new0 (GlickSliceInode, n_inodes);
-  /* Each non-leaf inode has to be in some dirent, plus termination. so max n_inodes * 2 */
-  inode_data.dirents = g_new0 (GlickSliceDirEntry, n_inodes * 2);
+  /* Each non-leaf inode has to be in some dirent, plus termination. so max n_inodes */
+  inode_data.dirents = g_new0 (GlickSliceDirEntry, n_inodes);
   inode_data.last_dirent = 0;
   inode_data.data_offset = 0;
 
