@@ -1,4 +1,4 @@
-CFLAGS=-Wall -O1 -g
+CFLAGS=-Wall -O1 -g -D_FILE_OFFSET_BITS=64
 
 PREFIX=/usr/local
 BINDIR=${PREFIX}/bin

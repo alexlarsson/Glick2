@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/mman.h>
 #include <fuse_lowlevel.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,7 @@
 #include <glib.h>
 
 #include "glick.h"
+#include "format.h"
 
 /* Inodes:
    32 bits
@@ -53,10 +55,24 @@ typedef struct {
   int ref_count;
   uint32_t id;
   int fd;
-  off_t file_size;
-  off_t offset;
-  char *data;
-  size_t data_len;
+  uint64_t file_size;
+  uint64_t slice_offset; /* File relative */
+  uint64_t data_offset; /* File relative */
+
+  char *slice_data;
+  uint64_t slice_length;
+
+  GlickSliceHash *hash;
+  uint32_t hash_shift; /* 1 << hash_shift == num hash entries */
+
+  char *strings;
+  size_t strings_size;
+
+  GlickSliceInode *inodes;
+  uint32_t num_inodes;
+
+  GlickSliceDirEntry *dirs;
+  uint32_t num_dirs;
 } GlickSlice;
 
 typedef struct {
@@ -514,40 +530,147 @@ fuse_lowlevel_ops glick_fs_oper = {
   .mknod	= glick_fs_mknod,
 };
 
+void *
+verify_header_block (char *data,
+		     uint32_t slice_size,
+		     uint32_t block_offset,
+		     uint32_t block_element_size,
+		     uint32_t block_n_elements)
+{
+  /* Avoid overflow in size calculation by doing it in 64bit */
+  uint64_t block_size = (uint64_t)block_element_size * (uint64_t)block_n_elements;
+
+  /* Don't wrap */
+  if ((uint64_t)block_offset + block_size < (uint64_t)block_offset)
+    return NULL;
+
+  /* Make sure block fits in slice */
+  if ((uint64_t)block_offset + block_size >= (uint64_t)slice_size)
+    return NULL;
+
+  return data + block_offset;
+}
+
 /* Looks up or creates a new slice */
 GlickSlice *
 glick_slice_create (int fd,
-		    off_t offset)
+		    uint64_t slice_offset)
 {
   GlickSlice *slice;
   struct stat statbuf;
+  char *data;
+  uint32_t slice_length;
+  uint64_t data_offset, data_size;
+  GlickSliceRoot *root;
 
   if (fstat (fd, &statbuf) != 0)
     return NULL;
 
-  slice = g_new0 (GlickSlice, 1);
+  if (slice_offset + sizeof (GlickSliceRoot) >= statbuf.st_size)
+    return NULL;
 
+  data = mmap (NULL, sizeof (GlickSliceRoot), PROT_READ,
+	       MAP_PRIVATE, fd, slice_offset);
+  if (data == NULL)
+    return NULL;
+
+  root = (GlickSliceRoot *)data;
+
+  slice_length = GUINT32_FROM_LE (root->slice_length);
+
+  munmap (data, sizeof (GlickSliceRoot));
+
+  /* Ensure that the slice fits in the file */
+  if (slice_offset >= statbuf.st_size ||
+      slice_length > statbuf.st_size ||
+      slice_offset > statbuf.st_size - slice_length)
+    return NULL;
+
+  /* slice_length is uint32, so this can't wrap size_t */
+  data = mmap (NULL, slice_length, PROT_READ,
+	       MAP_PRIVATE, fd, slice_offset);
+  if (data == NULL)
+    return NULL;
+
+  root = (GlickSliceRoot *)data;
+
+  /* Make sure size didn't randomly change under us after remap */
+  if (GUINT32_FROM_LE (root->slice_length) != slice_length) {
+    return NULL;
+  }
+
+  slice = g_new0 (GlickSlice, 1);
+  slice->ref_count = 1;
   slice->id = next_glick_slice_id++;
+  slice->file_size = statbuf.st_size;
+
+  slice->slice_offset = slice_offset;
+  slice->slice_data = data;
+  slice->slice_length = slice_length;
 
   if (slice->id > MAX_SLICE_ID)
     {
       g_warning ("Out of slice ids\n");
-      g_free (slice);
-      return NULL;
+      goto error;
     }
 
-  slice->ref_count = 1;
-  slice->fd = dup (fd);
-  slice->file_size = statbuf.st_size;
-  slice->offset = offset;
+  data_size = GUINT64_FROM_LE (root->data_size);
+  data_offset = GUINT32_FROM_LE (root->data_offset);
 
-  slice->data = NULL;
-  slice->data_len = 0;
+  // Convert to file-relative and ensure no wrap
+  if (slice_offset + data_offset < slice_offset)
+    goto error;
+  data_offset = slice_offset + data_offset;
+
+  /* Ensure data is in file */
+  if (data_offset >= statbuf.st_size ||
+      data_size > statbuf.st_size ||
+      data_offset > statbuf.st_size - data_size)
+    goto error;
+
+  slice->data_offset = data_offset;
+
+  slice->hash_shift = GUINT32_FROM_LE(root->hash_shift);;
+  if (slice->hash_shift >= 32)
+    goto error;
+  slice->hash = verify_header_block (data, slice_length,
+				     GUINT32_FROM_LE(root->hash_offset),
+				     1U << slice->hash_shift , sizeof (GlickSliceHash));
+  if (slice->hash == NULL)
+    goto error;
+
+  slice->num_inodes = GUINT32_FROM_LE(root->num_inodes);
+  slice->inodes = verify_header_block (data, slice_length,
+				       GUINT32_FROM_LE(root->inodes_offset),
+				       slice->num_inodes, sizeof (GlickSliceInode));
+  if (slice->inodes == NULL)
+    goto error;
+
+  slice->num_dirs = GUINT32_FROM_LE(root->num_dirs);
+  slice->dirs = verify_header_block (data, slice_length,
+				     GUINT32_FROM_LE(root->dirs_offset),
+				     slice->num_dirs, sizeof (GlickSliceDirEntry));
+  if (slice->dirs == NULL)
+    goto error;
+
+  slice->strings_size = GUINT32_FROM_LE(root->strings_size);
+  slice->strings = verify_header_block (data, slice_length,
+					GUINT32_FROM_LE(root->strings_offset),
+					slice->strings_size, 1);
+  if (slice->strings == NULL)
+    goto error;
+
+  slice->fd = dup (fd);
 
   glick_slices = g_list_prepend (glick_slices, slice);
   g_hash_table_insert (glick_slices_by_id, GINT_TO_POINTER (slice->id), slice);
 
   return slice;
+
+ error:
+  munmap (data, slice_length);
+  g_free (slice);
+  return NULL;
 }
 
 GlickSlice *
@@ -564,6 +687,7 @@ glick_slice_unref (GlickSlice *slice)
   if (slice->ref_count == 0)
     {
       g_hash_table_remove (glick_slices_by_id, GINT_TO_POINTER (slice->id));
+      munmap (slice->slice_data, slice->slice_length);
       close (slice->fd);
       g_free (slice);
     }
