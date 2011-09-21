@@ -303,6 +303,8 @@ main (int argc, char *argv[])
     {
       close (fuse_mounted_pipe[READ_SIDE]);
       close (internal_mount_done_pipe[WRITE_SIDE]);
+
+      setpgid (0, 0);
       return run_dummy_fs (argv[0], dummy_mountpoint, fuse_mounted_pipe[WRITE_SIDE], internal_mount_done_pipe[READ_SIDE]);
     }
 
