@@ -95,6 +95,12 @@ typedef struct {
   GlickMount *mount;
 }  GlickMountRef;
 
+typedef struct {
+  int fd;
+  uint64_t start;
+  uint64_t end;
+} GlickOpenFile;
+
 #define ROOT_INODE 1
 #define SOCKET_INODE 2
 #define SOCKET_NAME "socket"
@@ -537,6 +543,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
   int id, local;
 
   fi->keep_cache = 1;
+  fi->fh = 0;
 
   g_print ("glick_fs_open %d\n", (int)ino);
 
@@ -556,15 +563,34 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	}
 
       local = FILE_INODE_GET_LOCAL (ino);
-      /* TODO: Replace with real slice lookup */
-      if (local == 0)
+      if (local < slice->num_inodes)
 	{
-	  fi->fh = slice->fd;
-	  fuse_reply_open (req, fi);
+	  GlickSliceInode *inodep;
+	  GlickOpenFile *open;
+
+	  inodep = &slice->inodes[local];
+	  if (S_ISREG (GUINT32_FROM_LE (inodep->mode))) {
+	    open = g_new0 (GlickOpenFile, 1);
+	    open->fd = slice->fd;
+	    open->start = slice->data_offset + GUINT64_FROM_LE (inodep->offset);
+	    open->end = open->start + GUINT64_FROM_LE (inodep->size);
+	    fi->fh = (uint64_t)open;
+	    fuse_reply_open (req, fi);
+	  }
 	}
       else
 	fuse_reply_err (req, EACCES);
     }
+}
+
+static void
+glick_fs_release (fuse_req_t req, fuse_ino_t ino,
+		  struct fuse_file_info *fi)
+{
+  GlickOpenFile *open = (GlickOpenFile *) fi->fh;
+
+  g_free (open);
+  fuse_reply_err (req, 0);
 }
 
 static void
@@ -573,12 +599,20 @@ glick_fs_read (fuse_req_t req, fuse_ino_t ino, size_t size,
 {
   char *buf;
   ssize_t res;
+  GlickOpenFile *open;
+  uint64_t start, end;
 
-  (void) fi;
   g_print ("glick_fs_read\n");
 
+  open = (GlickOpenFile *)fi->fh;
+  start = open->start + off;
+  end = start + size;
+  start = MIN (start, open->end);
+  end = MIN (end, open->end);
+
+  size = end - start;
   buf = malloc (size);
-  res = pread (fi->fh, buf, size, off);
+  res = pread (open->fd, buf, size, start);
 
   if (res >= 0)
     fuse_reply_buf (req, buf, res);
@@ -623,6 +657,7 @@ fuse_lowlevel_ops glick_fs_oper = {
   .getattr	= glick_fs_getattr,
   .readdir	= glick_fs_readdir,
   .open		= glick_fs_open,
+  .release	= glick_fs_release,
   .read		= glick_fs_read,
   .mknod	= glick_fs_mknod,
 };
