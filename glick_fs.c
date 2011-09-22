@@ -123,6 +123,9 @@ typedef struct {
 #define MAX_SLICE_ID 0x8fff
 #define MAX_MOUNT_ID 0xffff
 
+#define ENTRY_CACHE_TIMEOUT_SEC 10
+#define ATTR_CACHE_TIMEOUT_SEC 10
+
 static GHashTable *glick_mounts_by_id; /* id -> GlickMount */
 static GHashTable *glick_mounts_by_name; /* name -> GlickMount */
 static GList *glick_mounts = NULL; /* list of GlickMount */
@@ -132,6 +135,7 @@ static int next_glick_mount_id = 3;
 static GList *glick_slices = NULL; /* list of GlickSlice */
 static GHashTable *glick_slices_by_id; /* id -> GlickSlice */
 static uint32_t next_glick_slice_id = 1;
+static unsigned long fuse_generation = 1;
 
 static int master_socket_ready_pipe = 0;
 static int socket_created = 0;
@@ -299,6 +303,10 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 
   g_print ("glick_fs_lookup, parent %d '%s'\n", (int)parent, name);
 
+  e.generation = fuse_generation;
+  e.attr_timeout = ATTR_CACHE_TIMEOUT_SEC;
+  e.entry_timeout = ENTRY_CACHE_TIMEOUT_SEC;
+
   if (INODE_IS_FILE (parent) || parent == SOCKET_INODE)
     {
       fuse_reply_err (req, ENOTDIR);
@@ -402,7 +410,8 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 	}
     }
 
-  fuse_reply_err (req, ENOENT);
+  e.ino = 0;
+  fuse_reply_entry (req, &e);
 }
 
 struct dirbuf {
@@ -626,6 +635,8 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 		mode_t mode, dev_t rdev)
 {
   struct fuse_entry_param e = {0};
+
+  e.generation = fuse_generation;
 
   g_print ("glick_fs_mknod %d %s %xd %xd\n", (int)parent, name, mode, (int)rdev);
 
