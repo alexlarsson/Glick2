@@ -52,11 +52,12 @@ slurp_files (const char *full_path, const char *relative_path, const char *name)
 	  child_path = g_build_filename (full_path, child_name, NULL);
 	  child_relative_path = g_build_filename (relative_path, child_name, NULL);
 	  child = slurp_files (child_path, child_relative_path, child_name);
-	  child->parent = file;
 	  g_free (child_relative_path);
 	  g_free (child_path);
-	  if (child != NULL)
+	  if (child != NULL) {
+	    child->parent = file;
 	    file->children = g_list_prepend (file->children, child);
+	  }
 	}
       g_dir_close (dir);
     }
