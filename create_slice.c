@@ -32,7 +32,7 @@ slurp_files (const char *full_path, const char *relative_path, const char *name)
 
   file = g_new0 (SFile, 1);
 
-  res = stat (full_path, &file->statbuf);
+  res = lstat (full_path, &file->statbuf);
 
   if (res != 0)
     {
