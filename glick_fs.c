@@ -287,7 +287,7 @@ glick_fs_getattr (fuse_req_t req, fuse_ino_t ino,
   if (glick_fs_stat (ino, &stbuf) == -1)
     fuse_reply_err (req, ENOENT);
   else
-    fuse_reply_attr (req, &stbuf, 1.0);
+    fuse_reply_attr (req, &stbuf, ATTR_CACHE_TIMEOUT_SEC);
 }
 
 static void
