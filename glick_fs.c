@@ -696,6 +696,7 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 
   socket_created = TRUE;
   e.ino = SOCKET_INODE;
+  e.generation = fuse_generation;
   e.attr_timeout = 1.0;
   e.entry_timeout = 1.0;
   glick_fs_stat (e.ino, &e.attr);
