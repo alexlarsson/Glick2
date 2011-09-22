@@ -419,6 +419,12 @@ struct dirbuf {
   size_t size;
 };
 
+static struct dirbuf *
+dirbuf_new (void)
+{
+  return g_new0 (struct dirbuf, 1);
+}
+
 static void
 dirbuf_add (fuse_req_t req, struct dirbuf *b, const char *name,
 	    fuse_ino_t ino)
@@ -427,12 +433,23 @@ dirbuf_add (fuse_req_t req, struct dirbuf *b, const char *name,
   size_t oldsize = b->size;
 
   b->size += fuse_add_direntry (req, NULL, 0, name, NULL, 0);
-  b->p = (char *) realloc (b->p, b->size);
+  b->p = (char *) g_realloc (b->p, b->size);
   memset (&stbuf, 0, sizeof (stbuf));
   stbuf.st_ino = ino;
   fuse_add_direntry (req, b->p + oldsize, b->size - oldsize, name, &stbuf,
 		     b->size);
 }
+
+static void
+dirbuf_free (struct dirbuf *b)
+{
+  if (b)
+    {
+      g_free (b->p);
+      g_free (b);
+    }
+}
+
 
 #define min(x, y) ((x) < (y) ? (x) : (y))
 
@@ -448,14 +465,14 @@ reply_buf_limited (fuse_req_t req, const char *buf, size_t bufsize,
 }
 
 static void
-glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
-		  off_t off, struct fuse_file_info *fi)
+glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
+		  struct fuse_file_info *fi)
 {
-  struct dirbuf b = { 0 };
+  struct dirbuf *b;
   GList *l;
 
-  g_print ("glick_fs_readdir %d\n", (int)ino);
-  (void) fi;
+  g_print ("glick_fs_opendir %d\n", (int)ino);
+  fi->fh = 0;
 
   if (INODE_IS_FILE (ino) || ino == SOCKET_INODE)
     {
@@ -463,21 +480,22 @@ glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
       return;
     }
 
-  dirbuf_add (req, &b, ".", ino);
+  b = dirbuf_new ();
+
+  dirbuf_add (req, b, ".", ino);
 
   if (ino == ROOT_INODE)
     {
-      dirbuf_add (req, &b, "..", ROOT_INODE);
+      dirbuf_add (req, b, "..", ROOT_INODE);
       if (socket_created)
-	dirbuf_add (req, &b, SOCKET_NAME, SOCKET_INODE);
+	dirbuf_add (req, b, SOCKET_NAME, SOCKET_INODE);
       for (l = glick_mounts; l != NULL; l = l->next)
 	{
 	  GlickMount *mount = l->data;
 
-	  dirbuf_add (req, &b, mount->name,
+	  dirbuf_add (req, b, mount->name,
 		      MOUNT_INODE_FROM_ID(mount->id));
 	}
-      reply_buf_limited (req, b.p, b.size, off, size);
     }
   else
     {
@@ -503,7 +521,7 @@ glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
 	  uint32_t dir_path_hash = djb_hash (dir_path);
 
 	  // TODO: Wrong...
-	  dirbuf_add (req, &b, "..", ROOT_INODE);
+	  dirbuf_add (req, b, "..", ROOT_INODE);
 
 	  for (l = mount->slices; l != NULL; l = l->next)
 	    {
@@ -524,24 +542,47 @@ glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
 		    uint32_t name = GUINT32_FROM_LE (slice->inodes[entry_inode].name);
 		    /* TODO: Check for null termination */
 		    if (name < slice->strings_size)
-		      dirbuf_add (req, &b, slice->strings + name, FILE_INODE(slice->id, entry_inode));
+		      dirbuf_add (req, b, slice->strings + name, FILE_INODE(slice->id, entry_inode));
 		  }
 		}
 	      }
 
 	    }
-
-	  reply_buf_limited (req, b.p, b.size, off, size);
 	}
       else
 	{
 	  /* TODO: Handle real dirs */
 	  fuse_reply_err (req, ENOENT);
+	  goto out;
 	}
     }
 
+  fi->fh = (uint64_t)b;
+  if (fuse_reply_open (req, fi) == -ENOENT)
+    goto out;
+  return;
+
  out:
-  free (b.p);
+  dirbuf_free (b);
+}
+
+static void
+glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
+		  off_t off, struct fuse_file_info *fi)
+{
+  struct dirbuf *b = (struct dirbuf *)fi->fh;
+  g_print ("glick_fs_readdir %d o=%d s=%d\n", (int)ino, (int)off, (int)size);
+  reply_buf_limited (req, b->p, b->size, off, size);
+}
+
+static void
+glick_fs_releasedir (fuse_req_t req, fuse_ino_t ino,
+		     struct fuse_file_info *fi)
+{
+  struct dirbuf *b = (struct dirbuf *)fi->fh;
+  g_print ("glick_fs_release %d\n", (int)ino);
+  dirbuf_free (b);
+  fuse_reply_err (req, 0);
 }
 
 static void
@@ -666,7 +707,9 @@ static struct
 fuse_lowlevel_ops glick_fs_oper = {
   .lookup	= glick_fs_lookup,
   .getattr	= glick_fs_getattr,
+  .opendir	= glick_fs_opendir,
   .readdir	= glick_fs_readdir,
+  .releasedir	= glick_fs_releasedir,
   .open		= glick_fs_open,
   .release	= glick_fs_release,
   .read		= glick_fs_read,
