@@ -123,8 +123,8 @@ typedef struct {
 #define MAX_SLICE_ID 0x8fff
 #define MAX_MOUNT_ID 0xffff
 
-#define ENTRY_CACHE_TIMEOUT_SEC 10
-#define ATTR_CACHE_TIMEOUT_SEC 10
+#define ENTRY_CACHE_TIMEOUT_SEC 10000
+#define ATTR_CACHE_TIMEOUT_SEC 10000
 
 static GHashTable *glick_mounts_by_id; /* id -> GlickMount */
 static GHashTable *glick_mounts_by_name; /* name -> GlickMount */
