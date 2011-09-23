@@ -714,6 +714,82 @@ glick_fs_read (fuse_req_t req, fuse_ino_t ino, size_t size,
 }
 
 static void
+glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
+		mode_t mode)
+{
+  struct fuse_entry_param e = {0};
+  gulong id;
+  gulong subdir;
+  GlickMount *mount;
+  GlickMountTransientFile *dir, *file;
+  char *path;
+
+  __debug__ (("glick_fs_mkdir %d %s %xd\n", (int)parent, name, mode));
+
+  if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
+    {
+      fuse_reply_err (req, ENOTDIR);
+      return;
+    }
+
+  if (parent == ROOT_INODE)
+    {
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  id = TRANSIENT_FILE_INODE_GET_MOUNT (parent);
+  subdir = TRANSIENT_FILE_INODE_GET_TRANSIENT (parent);
+
+  mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
+  if (mount == NULL)
+    {
+      fuse_reply_err (req, ENOENT);
+      return;
+    }
+
+  dir = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (subdir));
+  if (dir == NULL)
+    {
+      fuse_reply_err (req, ENOENT);
+      return;
+    }
+  if (!S_ISDIR (dir->mode))
+    {
+      fuse_reply_err (req, ENOTDIR);
+      return;
+    }
+
+  path = g_build_filename (dir->path, name, NULL);
+  if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
+    {
+      fuse_reply_err (req, EEXIST);
+      g_free (path);
+      return;
+    }
+
+  file = g_hash_table_lookup (mount->path_to_file, path);
+  if (file != NULL && (file->file_ref_count > 0 || file->owned))
+    {
+      fuse_reply_err (req, EEXIST);
+      g_free (path);
+      return;
+    }
+
+  file = glick_mount_transient_file_new_dir (mount, dir, path, TRUE);
+  g_free (path);
+
+  glick_mount_transient_file_stat (mount, file, &e.attr);
+  e.ino = e.attr.st_ino;
+  e.generation = fuse_generation;
+  e.attr_timeout = 1.0;
+  e.entry_timeout = 1.0;
+
+  fuse_reply_entry (req, &e);
+
+}
+
+static void
 glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 		mode_t mode, dev_t rdev)
 {
@@ -759,6 +835,7 @@ fuse_lowlevel_ops glick_fs_oper = {
   .release	= glick_fs_release,
   .read		= glick_fs_read,
   .mknod	= glick_fs_mknod,
+  .mkdir	= glick_fs_mkdir,
 };
 
 void *
