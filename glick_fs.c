@@ -545,22 +545,24 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 	      GlickSliceInode *inode;
 
 	      inode = glick_slice_lookup_path (slice, dir->path, dir_path_hash, &inode_num);
-	      if (inode != NULL && S_ISDIR (GUINT32_FROM_LE (inode->mode))) {
-		dirent = GUINT64_FROM_LE (inode->offset);
-		last_dirent = dirent + GUINT64_FROM_LE (inode->size);
-		dirent = MIN (dirent, slice->num_dirs);
-		last_dirent = MIN (last_dirent, slice->num_dirs);
-		for (i = dirent; i < last_dirent; i++) {
-		  uint16_t entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
-		  if (entry_inode < slice->num_inodes) {
-		    uint32_t name = GUINT32_FROM_LE (slice->inodes[entry_inode].name);
-		    /* TODO: Check for null termination */
-		    if (name < slice->strings_size)
-		      dirbuf_add (req, b, slice->strings + name, SLICE_FILE_INODE(slice->id, entry_inode));
-		  }
+	      if (inode != NULL && S_ISDIR (GUINT32_FROM_LE (inode->mode)))
+		{
+		  dirent = GUINT64_FROM_LE (inode->offset);
+		  last_dirent = dirent + GUINT64_FROM_LE (inode->size);
+		  dirent = MIN (dirent, slice->num_dirs);
+		  last_dirent = MIN (last_dirent, slice->num_dirs);
+		  for (i = dirent; i < last_dirent; i++)
+		    {
+		      uint16_t entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
+		      if (entry_inode < slice->num_inodes)
+			{
+			  uint32_t name = GUINT32_FROM_LE (slice->inodes[entry_inode].name);
+			  /* TODO: Check for null termination */
+			  if (name < slice->strings_size)
+			    dirbuf_add (req, b, slice->strings + name, SLICE_FILE_INODE(slice->id, entry_inode));
+			}
+		    }
 		}
-	      }
-
 	    }
 	}
       else
