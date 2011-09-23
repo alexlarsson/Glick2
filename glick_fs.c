@@ -427,6 +427,8 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 		  e.ino = e.attr.st_ino;
 		  __debug__ (("replying with transient (reffed) inode\n"));
 		  fuse_reply_entry (req, &e);
+		  g_free (path);
+		  return;
 		}
 
 	      g_free (path);
