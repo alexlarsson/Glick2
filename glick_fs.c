@@ -163,7 +163,7 @@ void glick_mount_transient_file_unown (GlickMountTransientFile *file);
 void glick_mount_transient_file_own (GlickMountTransientFile *file);
 void glick_mount_transient_file_free (GlickMountTransientFile *file);
 
-#if 0
+#if 1
 #define __debug__(x) g_print x
 #else
 #define __debug__(x)
@@ -308,7 +308,7 @@ glick_fs_getattr (fuse_req_t req, fuse_ino_t ino,
 {
   struct stat stbuf;
 
-  __debug__ (("glick_fs_getattr %d\n", (int)ino));
+  __debug__ (("glick_fs_getattr %x\n", (int)ino));
   (void) fi;
 
   memset (&stbuf, 0, sizeof(stbuf));
@@ -328,7 +328,7 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
   GlickMount *mount;
   char *path;
 
-  __debug__ (("glick_fs_lookup, parent %d '%s'\n", (int)parent, name));
+  __debug__ (("glick_fs_lookup, parent %x '%s'\n", (int)parent, name));
 
   e.generation = fuse_generation;
   e.attr_timeout = ATTR_CACHE_TIMEOUT_SEC;
@@ -502,7 +502,7 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
   struct dirbuf *b;
   GList *l;
 
-  __debug__ (("glick_fs_opendir %d\n", (int)ino));
+  __debug__ (("glick_fs_opendir %x\n", (int)ino));
   fi->fh = 0;
 
   if (INODE_IS_SLICE_FILE (ino) || ino == SOCKET_INODE)
@@ -617,7 +617,7 @@ glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, gsize size,
 		  off_t off, struct fuse_file_info *fi)
 {
   struct dirbuf *b = (struct dirbuf *)fi->fh;
-  __debug__ (("glick_fs_readdir %d o=%d s=%d\n", (int)ino, (int)off, (int)size));
+  __debug__ (("glick_fs_readdir %x o=%d s=%d\n", (int)ino, (int)off, (int)size));
   reply_buf_limited (req, b->p, b->size, off, size);
 }
 
@@ -626,7 +626,7 @@ glick_fs_releasedir (fuse_req_t req, fuse_ino_t ino,
 		     struct fuse_file_info *fi)
 {
   struct dirbuf *b = (struct dirbuf *)fi->fh;
-  __debug__ (("glick_fs_release %d\n", (int)ino));
+  __debug__ (("glick_fs_releasedir %x\n", (int)ino));
   dirbuf_free (b);
   fuse_reply_err (req, 0);
 }
@@ -641,7 +641,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
   fi->keep_cache = 1;
   fi->fh = 0;
 
-  __debug__ (("glick_fs_open %d\n", (int)ino));
+  __debug__ (("glick_fs_open %x\n", (int)ino));
 
   if (!INODE_IS_SLICE_FILE (ino))
     fuse_reply_err (req, EISDIR);
@@ -728,7 +728,7 @@ glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
   GlickMountTransientFile *dir, *file;
   char *path;
 
-  __debug__ (("glick_fs_mkdir %d %s %xd\n", (int)parent, name, mode));
+  __debug__ (("glick_fs_mkdir %x %s %x\n", (int)parent, name, mode));
 
   if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
     {
@@ -804,7 +804,7 @@ glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
   GlickMountTransientFile *dir, *file;
   char *path;
 
-  __debug__ (("glick_fs_mkdir %d %s %xd\n", (int)parent, name, mode));
+  __debug__ (("glick_fs_rmdir %x %s\n", (int)parent, name));
 
   if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
     {
@@ -882,7 +882,7 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 
   e.generation = fuse_generation;
 
-  __debug__ (("glick_fs_mknod %d %s %xd %xd\n", (int)parent, name, mode, (int)rdev));
+  __debug__ (("glick_fs_mknod %x %s %x %x\n", (int)parent, name, mode, (int)rdev));
 
   if (S_ISSOCK (mode))
     {
@@ -986,6 +986,7 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
       e.generation = fuse_generation;
       e.attr_timeout = 1.0;
       e.entry_timeout = 1.0;
+      __debug__ (("Create regular file with inode %x\n", (int)e.ino));
 
       fuse_reply_entry (req, &e);
     }
@@ -1003,7 +1004,7 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
   GlickMountTransientFile *dir, *file;
   char *path;
 
-  __debug__ (("glick_fs_mkdir %d %s %xd\n", (int)parent, name, mode));
+  __debug__ (("glick_fs_unlink %x %s\n", (int)parent, name));
 
   if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
     {
