@@ -867,10 +867,10 @@ glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
       return;
     }
 
-  /* TODO: This leaks the transient file. We could free it and
-     all children if we make sure to invalidate inodes in the
-     kernel */
-  glick_mount_transient_file_unown (file);
+  /* Should be safe to free here, as kernel will drop the cache for this file
+     due to the rmdir operation, and it should have no children due to above
+     NOTEMPTY checks */
+  glick_mount_transient_file_free (file);
   fuse_reply_err (req, 0);
 }
 
@@ -971,8 +971,7 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 
       if (file != NULL)
 	{
-	  /* TODO: free file and children, invalidate inodes */
-	  g_warning ("TODO: Can't handle replacing an old directory with a file atm\n");
+	  g_warning ("Unowned transient file not in slices. This shouldn't happen.\n");
 	  fuse_reply_err (req, EEXIST);
 	  g_free (path);
 	  return;
