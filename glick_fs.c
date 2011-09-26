@@ -53,26 +53,26 @@
 
 typedef struct {
   int ref_count;
-  uint32_t id;
+  guint32 id;
   int fd;
-  uint64_t file_size;
-  uint64_t slice_offset; /* File relative */
-  uint64_t data_offset; /* File relative */
+  guint64 file_size;
+  guint64 slice_offset; /* File relative */
+  guint64 data_offset; /* File relative */
 
   char *slice_data;
-  uint64_t slice_length;
+  guint64 slice_length;
 
   GlickSliceHash *hash;
-  uint32_t hash_shift; /* 1 << hash_shift == num hash entries */
+  guint32 hash_shift; /* 1 << hash_shift == num hash entries */
 
   char *strings;
-  size_t strings_size;
+  gsize strings_size;
 
   GlickSliceInode *inodes;
-  uint32_t num_inodes;
+  guint32 num_inodes;
 
   GlickSliceDirEntry *dirs;
-  uint32_t num_dirs;
+  guint32 num_dirs;
 } GlickSlice;
 
 typedef struct {
@@ -95,7 +95,7 @@ struct GlickMountTransientFile {
   mode_t mode;
   char *path;
   char *name;
-  uint16_t inode;
+  guint16 inode;
   GlickMountTransientFile *parent;
   guint file_ref_count; /* This keeps directories alive if there is a owned file/dir in it */
 
@@ -109,8 +109,8 @@ typedef struct {
 
 typedef struct {
   int fd;
-  uint64_t start;
-  uint64_t end;
+  guint64 start;
+  guint64 end;
 } GlickOpenFile;
 
 #define ROOT_INODE 1
@@ -147,15 +147,15 @@ static int next_glick_mount_id = 3;
 
 static GList *glick_slices = NULL; /* list of GlickSlice */
 static GHashTable *glick_slices_by_id; /* id -> GlickSlice */
-static uint32_t next_glick_slice_id = 1;
+static guint32 next_glick_slice_id = 1;
 static unsigned long fuse_generation = 1;
 
 static int master_socket_ready_pipe = 0;
 static int socket_created = 0;
 static int master_socket;
 
-GlickSliceInode * glick_slice_lookup_path (GlickSlice *slice, const char *path, uint32_t path_hash, uint32_t *inode_num);
-GlickSliceInode * glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, uint32_t *inode_num);
+GlickSliceInode * glick_slice_lookup_path (GlickSlice *slice, const char *path, guint32 path_hash, guint32 *inode_num);
+GlickSliceInode * glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, guint32 *inode_num);
 GlickMountTransientFile *glick_mount_transient_file_new (GlickMount *mount, GlickMountTransientFile *parent, const char *path, gboolean owned);
 GlickMountTransientFile *glick_mount_transient_file_new_dir (GlickMount *mount, GlickMountTransientFile *parent, char *path, gboolean owned);
 void glick_mount_transient_file_stat (GlickMountTransientFile *file, struct stat *statbuf);
@@ -172,13 +172,13 @@ void glick_mount_transient_file_free (GlickMountTransientFile *file);
 int
 recv_socket_message (int socket_fd,
 		     char *buffer,
-		     size_t buffer_size,
+		     gsize buffer_size,
 		     int *recieved_fd)
 {
   struct msghdr socket_message = { 0 };
   struct iovec io_vector[1];
   struct cmsghdr *control_message = NULL;
-  ssize_t res;
+  gssize res;
   char ancillary_buffer[CMSG_SPACE(sizeof (int))];
 
   *recieved_fd = -1;
@@ -222,11 +222,11 @@ recv_socket_message (int socket_fd,
   return res;
 }
 
-uint32_t
+guint32
 djb_hash (const void *v)
 {
   const signed char *p;
-  uint32_t h = 5381;
+  guint32 h = 5381;
 
   for (p = v; *p != '\0'; p++)
     h = (h << 5) + h + *p;
@@ -375,7 +375,7 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 	{
 	  GlickMountTransientFile *parent_file, *file;
 	  GlickSlice *slice;
-	  uint32_t inode_num;
+	  guint32 inode_num;
 	  GlickSliceInode *inode;
 
 	  /* Handle lookups inside subdirs */
@@ -394,7 +394,7 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 	      inode = glick_mount_lookup_path (mount, path, &slice, &inode_num);
 	      if (inode != NULL)
 		{
-		  uint32_t mode = GUINT32_FROM_LE (inode->mode);
+		  guint32 mode = GUINT32_FROM_LE (inode->mode);
 
 		  if (S_ISDIR (mode))
 		    {
@@ -447,7 +447,7 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 
 struct dirbuf {
   char *p;
-  size_t size;
+  gsize size;
 };
 
 static struct dirbuf *
@@ -461,7 +461,7 @@ dirbuf_add (fuse_req_t req, struct dirbuf *b, const char *name,
 	    fuse_ino_t ino)
 {
   struct stat stbuf;
-  size_t oldsize = b->size;
+  gsize oldsize = b->size;
 
   b->size += fuse_add_direntry (req, NULL, 0, name, NULL, 0);
   b->p = (char *) g_realloc (b->p, b->size);
@@ -485,8 +485,8 @@ dirbuf_free (struct dirbuf *b)
 #define min(x, y) ((x) < (y) ? (x) : (y))
 
 static int
-reply_buf_limited (fuse_req_t req, const char *buf, size_t bufsize,
-		   off_t off, size_t maxsize)
+reply_buf_limited (fuse_req_t req, const char *buf, gsize bufsize,
+		   off_t off, gsize maxsize)
 {
   if (off < bufsize)
     return fuse_reply_buf (req, buf + off,
@@ -547,7 +547,7 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
       dir = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (subdir));
       if (dir != NULL)
 	{
-	  uint32_t dir_path_hash = djb_hash (dir->path);
+	  guint32 dir_path_hash = djb_hash (dir->path);
 
 	  if (!S_ISDIR (dir->mode))
 	    {
@@ -561,8 +561,8 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 	  for (l = mount->slices; l != NULL; l = l->next)
 	    {
 	      GlickSlice *slice = l->data;
-	      uint64_t dirent, last_dirent, i;
-	      uint32_t inode_num;
+	      guint64 dirent, last_dirent, i;
+	      guint32 inode_num;
 	      GlickSliceInode *inode;
 
 	      inode = glick_slice_lookup_path (slice, dir->path, dir_path_hash, &inode_num);
@@ -574,10 +574,10 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 		  last_dirent = MIN (last_dirent, slice->num_dirs);
 		  for (i = dirent; i < last_dirent; i++)
 		    {
-		      uint16_t entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
+		      guint16 entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
 		      if (entry_inode < slice->num_inodes)
 			{
-			  uint32_t name = GUINT32_FROM_LE (slice->inodes[entry_inode].name);
+			  guint32 name = GUINT32_FROM_LE (slice->inodes[entry_inode].name);
 			  /* TODO: Check for null termination */
 			  if (name < slice->strings_size)
 			    dirbuf_add (req, b, slice->strings + name, SLICE_FILE_INODE(slice->id, entry_inode));
@@ -603,7 +603,7 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 	}
     }
 
-  fi->fh = (uint64_t)b;
+  fi->fh = (guint64)b;
   if (fuse_reply_open (req, fi) == -ENOENT)
     goto out;
   return;
@@ -613,7 +613,7 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 }
 
 static void
-glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, size_t size,
+glick_fs_readdir (fuse_req_t req, fuse_ino_t ino, gsize size,
 		  off_t off, struct fuse_file_info *fi)
 {
   struct dirbuf *b = (struct dirbuf *)fi->fh;
@@ -670,7 +670,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	    open->fd = slice->fd;
 	    open->start = slice->data_offset + GUINT64_FROM_LE (inodep->offset);
 	    open->end = open->start + GUINT64_FROM_LE (inodep->size);
-	    fi->fh = (uint64_t)open;
+	    fi->fh = (guint64)open;
 	    fuse_reply_open (req, fi);
 	  }
 	}
@@ -690,13 +690,13 @@ glick_fs_release (fuse_req_t req, fuse_ino_t ino,
 }
 
 static void
-glick_fs_read (fuse_req_t req, fuse_ino_t ino, size_t size,
+glick_fs_read (fuse_req_t req, fuse_ino_t ino, gsize size,
 	       off_t off, struct fuse_file_info *fi)
 {
   char *buf;
-  ssize_t res;
+  gssize res;
   GlickOpenFile *open;
-  uint64_t start, end;
+  guint64 start, end;
 
   __debug__ (("glick_fs_read\n"));
 
@@ -1089,20 +1089,20 @@ fuse_lowlevel_ops glick_fs_oper = {
 
 void *
 verify_header_block (char *data,
-		     uint32_t slice_size,
-		     uint32_t block_offset,
-		     uint32_t block_element_size,
-		     uint32_t block_n_elements)
+		     guint32 slice_size,
+		     guint32 block_offset,
+		     guint32 block_element_size,
+		     guint32 block_n_elements)
 {
   /* Avoid overflow in size calculation by doing it in 64bit */
-  uint64_t block_size = (uint64_t)block_element_size * (uint64_t)block_n_elements;
+  guint64 block_size = (guint64)block_element_size * (guint64)block_n_elements;
 
   /* Don't wrap */
-  if ((uint64_t)block_offset + block_size < (uint64_t)block_offset)
+  if ((guint64)block_offset + block_size < (guint64)block_offset)
     return NULL;
 
   /* Make sure block fits in slice */
-  if ((uint64_t)block_offset + block_size >= (uint64_t)slice_size)
+  if ((guint64)block_offset + block_size >= (guint64)slice_size)
     return NULL;
 
   return data + block_offset;
@@ -1112,13 +1112,13 @@ verify_header_block (char *data,
 /* Looks up or creates a new slice */
 GlickSlice *
 glick_slice_create (int fd,
-		    uint64_t slice_offset)
+		    guint64 slice_offset)
 {
   GlickSlice *slice;
   struct stat statbuf;
   char *data;
-  uint32_t slice_length;
-  uint64_t data_offset, data_size;
+  guint32 slice_length;
+  guint64 data_offset, data_size;
   GlickSliceRoot *root;
 
   if (fstat (fd, &statbuf) != 0)
@@ -1144,7 +1144,7 @@ glick_slice_create (int fd,
       slice_offset > statbuf.st_size - slice_length)
     return NULL;
 
-  /* slice_length is uint32, so this can't wrap size_t */
+  /* slice_length is uint32, so this can't wrap gsize */
   data = mmap (NULL, slice_length, PROT_READ,
 	       MAP_PRIVATE, fd, slice_offset);
   if (data == NULL)
@@ -1252,7 +1252,7 @@ glick_slice_unref (GlickSlice *slice)
 }
 
 gboolean
-glick_slice_string_equal (GlickSlice *slice, uint32_t str_offset, const char *other, const char *other_end)
+glick_slice_string_equal (GlickSlice *slice, guint32 str_offset, const char *other, const char *other_end)
 {
   const char *str, *strings_end;
 
@@ -1277,7 +1277,7 @@ glick_slice_inode_has_path (GlickSlice *slice, GlickSliceInode *inodep, const ch
 {
   const char *last_slash;
   const char *path_component;
-  uint16_t parent_inode;
+  guint16 parent_inode;
 
   /* Empty paths not allowed */
   if (path == path_end)
@@ -1309,11 +1309,11 @@ glick_slice_inode_has_path (GlickSlice *slice, GlickSliceInode *inodep, const ch
 }
 
 GlickSliceInode *
-glick_slice_lookup_path (GlickSlice *slice, const char *path, uint32_t path_hash, uint32_t *inode_num)
+glick_slice_lookup_path (GlickSlice *slice, const char *path, guint32 path_hash, guint32 *inode_num)
 {
-  uint32_t hash_bin;
-  uint32_t hash_mask;
-  uint32_t inode;
+  guint32 hash_bin;
+  guint32 hash_mask;
+  guint32 inode;
   GlickSliceInode *inodep;
   int step;
 
@@ -1452,10 +1452,10 @@ glick_mount_transient_file_free (GlickMountTransientFile *file)
 }
 
 GlickSliceInode *
-glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, uint32_t *inode_num)
+glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, guint32 *inode_num)
 {
   GList *l;
-  uint32_t path_hash;
+  guint32 path_hash;
 
   path_hash = djb_hash (path);
 
@@ -1607,7 +1607,7 @@ main_loop (struct fuse_session *se)
   int res = 0;
   struct fuse_chan *ch = fuse_session_next_chan (se, NULL);
   int fuse_fd = fuse_chan_fd (ch);
-  size_t bufsize = fuse_chan_bufsize (ch);
+  gsize bufsize = fuse_chan_bufsize (ch);
   char *buf = (char *) malloc (bufsize);
   struct pollfd *polls;
   int n_polls, polls_needed, i;

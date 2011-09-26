@@ -12,8 +12,8 @@ typedef struct _SFile SFile;
 
 struct _SFile {
   char *name;
-  uint32_t inode;
-  uint32_t name_offset;
+  guint32 inode;
+  guint32 name_offset;
   char *full_path;
   char *relative_path;
   SFile *parent;
@@ -119,7 +119,7 @@ visit_depth_first (SFile *root, FileVisitorFunc visitor, void *user_data)
 
 void assign_inode (SFile *file, void *user_data)
 {
-  uint32_t *n_inodes = user_data;
+  guint32 *n_inodes = user_data;
   file->inode = (*n_inodes)++;
 }
 
@@ -128,11 +128,11 @@ typedef struct {
   GString *data;
 } StringData;
 
-uint32_t
+guint32
 get_string (StringData *data, const char *str)
 {
   gpointer r;
-  uint32_t offset;
+  guint32 offset;
 
   r = g_hash_table_lookup (data->lookup, str);
   if (r != NULL)
@@ -148,7 +148,7 @@ get_string (StringData *data, const char *str)
 
   g_hash_table_insert (data->lookup, g_strdup (str), GUINT_TO_POINTER (offset));
 
-  return (uint32_t) offset;
+  return (guint32) offset;
 }
 
 void
@@ -159,19 +159,19 @@ collect_file_names (SFile *file, void *user_data)
 }
 
 typedef struct {
-  uint32_t n_hashes;
+  guint32 n_hashes;
   GlickSliceHash *hash;
   GlickSliceInode *inodes;
   GlickSliceDirEntry *dirents;
-  uint32_t last_dirent;
-  uint64_t data_offset;
+  guint32 last_dirent;
+  guint64 data_offset;
 } InodeData;
 
 guint
 djb_hash (const void *v)
 {
   const signed char *p;
-  uint32_t h = 5381;
+  guint32 h = 5381;
 
   for (p = v; *p != '\0'; p++)
     h = (h << 5) + h + *p;
@@ -184,7 +184,7 @@ collect_inode (SFile *file, void *user_data)
 {
   InodeData *inode_data = user_data;
   GlickSliceInode *inode;
-  uint32_t hash, bucket;
+  guint32 hash, bucket;
   GList *l;
   int i;
   int step;
@@ -276,13 +276,13 @@ int
 main (int argc, char *argv[])
 {
   SFile *root;
-  uint32_t n_inodes;
-  uint32_t n_hashes;
-  uint32_t hash_shift;
+  guint32 n_inodes;
+  guint32 n_hashes;
+  guint32 hash_shift;
   StringData string_data;
   InodeData inode_data;
   GlickSliceRoot slice_root = { 0 };
-  size_t offset, padding;
+  gsize offset, padding;
   GFile *f;
   GFileOutputStream *output;
   GError *error;

@@ -1,13 +1,13 @@
-#include <stdint.h>
+#include <glib.h>
 
 typedef struct {
-  uint32_t version;
-  uint32_t padding;
-  uint64_t offset;
+  guint32 version;
+  guint32 padding;
+  guint64 offset;
 } GlickMountRequestMsg;
 
 typedef struct {
-  uint32_t result;
-  uint32_t padding;
+  guint32 result;
+  guint32 padding;
   char name[128];
 } GlickMountRequestReply;
