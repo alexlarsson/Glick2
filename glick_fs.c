@@ -665,14 +665,17 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	  GlickOpenFile *open;
 
 	  inodep = &slice->inodes[local];
-	  if (S_ISREG (GUINT32_FROM_LE (inodep->mode))) {
-	    open = g_new0 (GlickOpenFile, 1);
-	    open->fd = slice->fd;
-	    open->start = slice->data_offset + GUINT64_FROM_LE (inodep->offset);
-	    open->end = open->start + GUINT64_FROM_LE (inodep->size);
-	    fi->fh = (guint64)open;
-	    fuse_reply_open (req, fi);
-	  }
+	  if (S_ISREG (GUINT32_FROM_LE (inodep->mode)))
+	    {
+	      open = g_new0 (GlickOpenFile, 1);
+	      open->fd = slice->fd;
+	      open->start = slice->data_offset + GUINT64_FROM_LE (inodep->offset);
+	      open->end = open->start + GUINT64_FROM_LE (inodep->size);
+	      fi->fh = (guint64)open;
+	      fuse_reply_open (req, fi);
+	    }
+	  else
+	    fuse_reply_err (req, EISDIR);
 	}
       else
 	fuse_reply_err (req, EACCES);
