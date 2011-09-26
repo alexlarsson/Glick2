@@ -156,6 +156,7 @@ static int master_socket_ready_pipe = 0;
 static int socket_created = 0;
 static int master_socket;
 
+const char *glick_slice_lookup_string (GlickSlice *slice, size_t offset);
 GlickSliceInode * glick_slice_lookup_path (GlickSlice *slice, const char *path, guint32 path_hash, guint32 *inode_num);
 GlickSliceInode * glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, guint32 *inode_num);
 GlickMountTransientFile *glick_mount_transient_file_new (GlickMount *mount, GlickMountTransientFile *parent, const char *path, gboolean owned);
@@ -580,10 +581,9 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 		      guint16 entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
 		      if (entry_inode < slice->num_inodes)
 			{
-			  guint32 name = GUINT32_FROM_LE (slice->inodes[entry_inode].name);
-			  /* TODO: Check for null termination */
-			  if (name < slice->strings_size)
-			    dirbuf_add (req, b, slice->strings + name, SLICE_FILE_INODE(slice->id, entry_inode));
+			  const char *name = glick_slice_lookup_string (slice, GUINT32_FROM_LE (slice->inodes[entry_inode].name));
+			  if (name != NULL)
+			    dirbuf_add (req, b, name, SLICE_FILE_INODE(slice->id, entry_inode));
 			}
 		    }
 		}
@@ -858,6 +858,70 @@ glick_fs_write (fuse_req_t req, fuse_ino_t ino, const char *buf,
     fuse_reply_write (req, res);
   else
     fuse_reply_err (req, errno);
+}
+
+static void
+glick_fs_readlink (fuse_req_t req, fuse_ino_t ino)
+{
+  GlickMount *mount;
+  GlickSlice *slice;
+  int id, local;
+  GlickMountTransientFile *file;
+
+  __debug__ (("glick_fs_readlink %x\n", (int)ino));
+
+  if (!INODE_IS_SLICE_FILE (ino))
+    {
+      id = TRANSIENT_FILE_INODE_GET_MOUNT (ino);
+
+      mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
+      if (mount == NULL)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+
+      file = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (TRANSIENT_FILE_INODE_GET_TRANSIENT(ino)));
+      if (file == NULL||
+	  file->fd == -1)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+
+      fuse_reply_err (req, ENOSYS);
+    }
+  else
+    {
+      id = SLICE_FILE_INODE_GET_SLICE (ino);
+
+      slice = g_hash_table_lookup (glick_slices_by_id, GINT_TO_POINTER (id));
+      if (slice == NULL)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+
+      local = SLICE_FILE_INODE_GET_LOCAL (ino);
+      if (local < slice->num_inodes)
+	{
+	  GlickSliceInode *inodep;
+
+	  inodep = &slice->inodes[local];
+	  if (S_ISLNK (GUINT32_FROM_LE (inodep->mode)))
+	    {
+	      const char *lnk = glick_slice_lookup_string (slice, GUINT64_FROM_LE (inodep->offset));
+	      if (lnk != NULL)
+		fuse_reply_readlink (req, lnk);
+	      else
+		fuse_reply_err (req, EACCES);
+	    }
+	  else
+	    fuse_reply_err (req, EINVAL);
+	}
+      else
+	fuse_reply_err (req, EACCES);
+    }
 }
 
 static void
@@ -1228,6 +1292,7 @@ fuse_lowlevel_ops glick_fs_oper = {
   .opendir	= glick_fs_opendir,
   .readdir	= glick_fs_readdir,
   .releasedir	= glick_fs_releasedir,
+  .readlink	= glick_fs_readlink,
   .open		= glick_fs_open,
   .release	= glick_fs_release,
   .read		= glick_fs_read,
@@ -1458,6 +1523,17 @@ glick_slice_inode_has_path (GlickSlice *slice, GlickSliceInode *inodep, const ch
     return parent_inode == 0;
 
   return glick_slice_inode_has_path (slice, &slice->inodes[parent_inode], path, last_slash);
+}
+
+const char *
+glick_slice_lookup_string (GlickSlice *slice, size_t offset)
+{
+  if (offset >= slice->strings_size)
+    return NULL;
+
+  /* TODO: Check for null termination */
+
+  return slice->strings + offset;
 }
 
 GlickSliceInode *

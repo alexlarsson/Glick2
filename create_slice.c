@@ -19,6 +19,8 @@ struct _SFile {
   SFile *parent;
   struct stat statbuf;
   GList *children;
+  char *symlink_data;
+  guint32 symlink_offset;
 };
 
 SFile *
@@ -60,6 +62,16 @@ slurp_files (const char *full_path, const char *relative_path, const char *name)
 	  }
 	}
       g_dir_close (dir);
+    }
+  if (S_ISLNK(file->statbuf.st_mode))
+    {
+      char buffer[4096];
+      ssize_t size;
+      size = readlink (full_path, buffer, sizeof (buffer));
+      if (size < 0)
+	file->symlink_data = g_strdup (".");
+      else
+	file->symlink_data = g_strndup (buffer, size);
     }
 
   return file;
@@ -156,6 +168,9 @@ collect_file_names (SFile *file, void *user_data)
 {
   StringData *string_data = user_data;
   file->name_offset = get_string (string_data, file->name);
+
+  if (S_ISLNK(file->statbuf.st_mode))
+    file->symlink_offset = get_string (string_data, file->symlink_data);
 }
 
 typedef struct {
@@ -212,6 +227,9 @@ collect_inode (SFile *file, void *user_data)
     inode->size = GUINT32_TO_LE (file->statbuf.st_size);
     inode->offset = GUINT64_TO_LE (inode_data->data_offset);
     inode_data->data_offset += file->statbuf.st_size;
+  } else if (S_ISLNK (file->statbuf.st_mode)) {
+    inode->size = 0;
+    inode->offset = file->symlink_offset;
   } else {
     fprintf (stderr, "Unsupported mode for %s\n", file->relative_path);
     inode->size = 0;
