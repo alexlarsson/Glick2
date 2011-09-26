@@ -98,6 +98,7 @@ struct GlickMountTransientFile {
   guint16 inode;
   GlickMountTransientFile *parent;
   guint file_ref_count; /* This keeps directories alive if there is a owned file/dir in it */
+  int fd;
 
   GList *children;
 };
@@ -110,7 +111,8 @@ typedef struct {
 typedef struct {
   int fd;
   guint64 start;
-  guint64 end;
+  gint64 end;
+  int flags;
 } GlickOpenFile;
 
 #define ROOT_INODE 1
@@ -158,6 +160,7 @@ GlickSliceInode * glick_slice_lookup_path (GlickSlice *slice, const char *path, 
 GlickSliceInode * glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, guint32 *inode_num);
 GlickMountTransientFile *glick_mount_transient_file_new (GlickMount *mount, GlickMountTransientFile *parent, const char *path, gboolean owned);
 GlickMountTransientFile *glick_mount_transient_file_new_dir (GlickMount *mount, GlickMountTransientFile *parent, char *path, gboolean owned);
+GlickMountTransientFile *glick_mount_transient_file_new_file (GlickMount *mount, GlickMountTransientFile *parent, char *path);
 void glick_mount_transient_file_stat (GlickMountTransientFile *file, struct stat *statbuf);
 void glick_mount_transient_file_unown (GlickMountTransientFile *file);
 void glick_mount_transient_file_own (GlickMountTransientFile *file);
@@ -635,8 +638,11 @@ static void
 glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	       struct fuse_file_info *fi)
 {
+  GlickMount *mount;
   GlickSlice *slice;
   int id, local;
+  GlickMountTransientFile *file;
+  GlickOpenFile *open;
 
   fi->keep_cache = 1;
   fi->fh = 0;
@@ -644,11 +650,40 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
   __debug__ (("glick_fs_open %x\n", (int)ino));
 
   if (!INODE_IS_SLICE_FILE (ino))
-    fuse_reply_err (req, EISDIR);
-  else if ((fi->flags & 3) != O_RDONLY)
-    fuse_reply_err (req, EACCES);
+    {
+      id = TRANSIENT_FILE_INODE_GET_MOUNT (ino);
+
+      mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
+      if (mount == NULL)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+
+      file = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (TRANSIENT_FILE_INODE_GET_TRANSIENT(ino)));
+      if (file == NULL||
+	  file->fd == -1)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+
+      open = g_new0 (GlickOpenFile, 1);
+      open->start = 0;
+      open->end = -1;
+      open->flags = fi->flags;
+      open->fd = file->fd;
+      fi->fh = (guint64)open;
+      fuse_reply_open (req, fi);
+    }
   else
     {
+      if ((fi->flags & 3) != O_RDONLY)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+
       id = SLICE_FILE_INODE_GET_SLICE (ino);
 
       slice = g_hash_table_lookup (glick_slices_by_id, GINT_TO_POINTER (id));
@@ -662,7 +697,6 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
       if (local < slice->num_inodes)
 	{
 	  GlickSliceInode *inodep;
-	  GlickOpenFile *open;
 
 	  inodep = &slice->inodes[local];
 	  if (S_ISREG (GUINT32_FROM_LE (inodep->mode)))
@@ -671,6 +705,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	      open->fd = slice->fd;
 	      open->start = slice->data_offset + GUINT64_FROM_LE (inodep->offset);
 	      open->end = open->start + GUINT64_FROM_LE (inodep->size);
+	      open->flags = fi->flags;
 	      fi->fh = (guint64)open;
 	      fuse_reply_open (req, fi);
 	    }
@@ -688,6 +723,8 @@ glick_fs_release (fuse_req_t req, fuse_ino_t ino,
 {
   GlickOpenFile *open = (GlickOpenFile *) fi->fh;
 
+  __debug__ (("glick_fs_release\n"));
+
   g_free (open);
   fuse_reply_err (req, 0);
 }
@@ -704,20 +741,123 @@ glick_fs_read (fuse_req_t req, fuse_ino_t ino, gsize size,
   __debug__ (("glick_fs_read\n"));
 
   open = (GlickOpenFile *)fi->fh;
-  start = open->start + off;
-  end = start + size;
-  start = MIN (start, open->end);
-  end = MIN (end, open->end);
 
-  size = end - start;
+  if (open->flags & O_WRONLY)
+    {
+      fuse_reply_err (req, EBADF);
+      return;
+    }
+
+  start = open->start + off;
+
+  if (open->end != -1)
+    {
+      end = start + size;
+      start = MIN (start, open->end);
+      end = MIN (end, open->end);
+      size = end - start;
+    }
+
   buf = malloc (size);
   res = pread (open->fd, buf, size, start);
-
   if (res >= 0)
     fuse_reply_buf (req, buf, res);
   else
-    fuse_reply_buf (req, NULL, 0);
+    fuse_reply_err (req, errno);
   free (buf);
+}
+
+static void
+glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
+		  int to_set, struct fuse_file_info *fi)
+{
+  GlickMount *mount;
+  int id;
+  GlickMountTransientFile *file;
+  struct stat res_stat;
+  int res;
+
+  __debug__ (("glick_fs_setattr\n"));
+
+  if (INODE_IS_SLICE_FILE (ino))
+    {
+      __debug__ (("replying with EACCESS\n"));
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  id = TRANSIENT_FILE_INODE_GET_MOUNT (ino);
+  mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
+  if (mount == NULL)
+    {
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  file = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (TRANSIENT_FILE_INODE_GET_TRANSIENT(ino)));
+  if (file == NULL||
+      file->fd == -1)
+    {
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  if (to_set & FUSE_SET_ATTR_SIZE)
+    {
+      res = ftruncate (file->fd, attr->st_size);
+      if (res != 0)
+	{
+	  int errsv = errno;
+	  __debug__ (("replying with %d\n", errsv));
+	  fuse_reply_err (req, errsv);
+	  return;
+	}
+    }
+  if (to_set &
+      (FUSE_SET_ATTR_MODE |
+       FUSE_SET_ATTR_UID |
+       FUSE_SET_ATTR_GID |
+       FUSE_SET_ATTR_ATIME |
+       FUSE_SET_ATTR_MTIME |
+       FUSE_SET_ATTR_ATIME_NOW |
+       FUSE_SET_ATTR_MTIME_NOW))
+    {
+      __debug__ (("replying with ENOSYS\n"));
+      fuse_reply_err (req, ENOSYS);
+      return;
+    }
+
+  glick_mount_transient_file_stat (file, &res_stat);
+  __debug__ (("replying with access\n"));
+  fuse_reply_attr (req, &res_stat, ATTR_CACHE_TIMEOUT_SEC);
+}
+
+
+static void
+glick_fs_write (fuse_req_t req, fuse_ino_t ino, const char *buf,
+		size_t size, off_t off, struct fuse_file_info *fi)
+{
+  gssize res;
+  GlickOpenFile *open;
+
+  __debug__ (("glick_fs_write\n"));
+
+  open = (GlickOpenFile *)fi->fh;
+
+  if (open->flags & O_RDONLY)
+    {
+      fuse_reply_err (req, EBADF);
+      return;
+    }
+
+  /* This assumes open->start is 0 and open->end == -1, which
+     should be true as these are only used for readonly files */
+
+  res = pwrite (open->fd, buf, size, off);
+  if (res >= 0)
+    fuse_reply_write (req, res);
+  else
+    fuse_reply_err (req, errno);
 }
 
 static void
@@ -980,7 +1120,14 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 	  return;
 	}
 
-      file = glick_mount_transient_file_new_dir (mount, dir, path, TRUE);
+      file = glick_mount_transient_file_new_file (mount, dir, path);
+      if (file == NULL)
+	{
+	  fuse_reply_err (req, ENOMEM);
+	  g_free (path);
+	  return;
+	}
+
       file->mode = mode;
       g_free (path);
 
@@ -1084,6 +1231,8 @@ fuse_lowlevel_ops glick_fs_oper = {
   .open		= glick_fs_open,
   .release	= glick_fs_release,
   .read		= glick_fs_read,
+  .write	= glick_fs_write,
+  .setattr	= glick_fs_setattr,
   .mknod	= glick_fs_mknod,
   .unlink	= glick_fs_unlink,
   .mkdir	= glick_fs_mkdir,
@@ -1385,6 +1534,7 @@ glick_mount_transient_file_new (GlickMount *mount, GlickMountTransientFile *pare
   file = g_new0 (GlickMountTransientFile, 1);
   file->path = g_strdup (path);
   file->mount = mount;
+  file->fd = -1;
 
   /* Name references path and is the last path element, or "/" for root */
   file->name = strrchr (file->path, '/');
@@ -1419,9 +1569,17 @@ GlickMountTransientFile *
 glick_mount_transient_file_new_file (GlickMount *mount, GlickMountTransientFile *parent, char *path)
 {
   GlickMountTransientFile *file;
+  char *tmp_path;
+  int fd;
+
+  fd = g_file_open_tmp ("XXXXXX.glick", &tmp_path, NULL);
+  if (fd == -1)
+    return NULL;
+  unlink (tmp_path);
 
   file = glick_mount_transient_file_new (mount, parent, path, TRUE);
   file->mode = S_IFREG | 0755;
+  file->fd = fd;
 
   return file;
 }
@@ -1436,6 +1594,20 @@ glick_mount_transient_file_stat (GlickMountTransientFile *file, struct stat *sta
   else
     statbuf->st_nlink = 1;
   statbuf->st_size = 0;
+
+  if (file->fd != -1)
+    {
+      struct stat s;
+      if (fstat (file->fd, &s) == 0)
+	{
+	  statbuf->st_size = s.st_size;
+	  statbuf->st_blksize = s.st_blksize;
+	  statbuf->st_blocks = s.st_blocks;
+	  statbuf->st_atime = s.st_atime;
+	  statbuf->st_mtime = s.st_mtime;
+	  statbuf->st_ctime = s.st_ctime;
+	}
+    }
 }
 
 void
@@ -1447,6 +1619,9 @@ glick_mount_transient_file_free (GlickMountTransientFile *file)
     file->parent->children = g_list_remove (file->parent->children, file);
 
   g_assert (file->children == NULL);
+
+  if (file->fd != -1)
+    close (file->fd);
 
   g_hash_table_remove (file->mount->inode_to_file, GUINT_TO_POINTER (file->inode));
   g_hash_table_remove (file->mount->path_to_file, file->path);
