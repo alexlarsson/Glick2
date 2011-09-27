@@ -878,6 +878,38 @@ find_parent_dir_for_path_op (fuse_req_t req, fuse_ino_t parent, GlickMount **mou
   return dir;
 }
 
+static char *
+ensure_no_entry_for_child_op (fuse_req_t req, GlickMount *mount, GlickMountTransientFile *dir, const char *name)
+{
+  GlickMountTransientFile *file;
+  char *path;
+
+  path = g_build_filename (dir->path, name, NULL);
+  if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
+    {
+      fuse_reply_err (req, EEXIST);
+      g_free (path);
+      return NULL;
+    }
+
+  file = g_hash_table_lookup (mount->path_to_file, path);
+  if (file != NULL && (file->file_ref_count > 0 || file->owned))
+    {
+      fuse_reply_err (req, EEXIST);
+      g_free (path);
+      return NULL;
+    }
+
+  if (file != NULL)
+    {
+      g_warning ("Unowned transient file not in slices. This shouldn't happen.\n");
+      fuse_reply_err (req, EEXIST);
+      g_free (path);
+      return NULL;
+    }
+
+  return path;
+}
 
 static void
 glick_fs_symlink (fuse_req_t req, const char *link, fuse_ino_t parent,
@@ -894,29 +926,9 @@ glick_fs_symlink (fuse_req_t req, const char *link, fuse_ino_t parent,
   if (dir == NULL)
     return;
 
-  path = g_build_filename (dir->path, name, NULL);
-  if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
-    {
-      fuse_reply_err (req, EEXIST);
-      g_free (path);
-      return;
-    }
-
-  file = g_hash_table_lookup (mount->path_to_file, path);
-  if (file != NULL && (file->file_ref_count > 0 || file->owned))
-    {
-      fuse_reply_err (req, EEXIST);
-      g_free (path);
-      return;
-    }
-
-  if (file != NULL)
-    {
-      g_warning ("Unowned transient file not in slices. This shouldn't happen.\n");
-      fuse_reply_err (req, EEXIST);
-      g_free (path);
-      return;
-    }
+  path = ensure_no_entry_for_child_op (req, mount, dir, name);
+  if (path == NULL)
+    return;
 
   file = glick_mount_transient_file_new (mount, dir, path, TRUE);
   file->mode = S_IFLNK | 0755;
@@ -1010,26 +1022,11 @@ glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
   if (dir == NULL)
     return;
 
-  path = g_build_filename (dir->path, name, NULL);
-  if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
-    {
-      fuse_reply_err (req, EEXIST);
-      g_free (path);
-      return;
-    }
+  path = ensure_no_entry_for_child_op (req, mount, dir, name);
+  if (path == NULL)
+    return;
 
-  file = g_hash_table_lookup (mount->path_to_file, path);
-  if (file != NULL && (file->file_ref_count > 0 || file->owned))
-    {
-      fuse_reply_err (req, EEXIST);
-      g_free (path);
-      return;
-    }
-
-  if (file != NULL)
-    glick_mount_transient_file_own (file);
-  else
-    file = glick_mount_transient_file_new_dir (mount, dir, path, TRUE);
+  file = glick_mount_transient_file_new_dir (mount, dir, path, TRUE);
   g_free (path);
 
   glick_mount_transient_file_stat (file, &e.attr);
@@ -1136,29 +1133,9 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
       if (dir == NULL)
 	return;
 
-      path = g_build_filename (dir->path, name, NULL);
-      if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
-	{
-	  fuse_reply_err (req, EEXIST);
-	  g_free (path);
-	  return;
-	}
-
-      file = g_hash_table_lookup (mount->path_to_file, path);
-      if (file != NULL && (file->file_ref_count > 0 || file->owned))
-	{
-	  fuse_reply_err (req, EEXIST);
-	  g_free (path);
-	  return;
-	}
-
-      if (file != NULL)
-	{
-	  g_warning ("Unowned transient file not in slices. This shouldn't happen.\n");
-	  fuse_reply_err (req, EEXIST);
-	  g_free (path);
-	  return;
-	}
+      path = ensure_no_entry_for_child_op (req, mount, dir, name);
+      if (path == NULL)
+	return;
 
       file = glick_mount_transient_file_new_file (mount, dir, path);
       if (file == NULL)
