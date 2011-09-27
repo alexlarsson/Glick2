@@ -18,6 +18,23 @@
 #include "glick.h"
 #include "format.h"
 
+/* TODO:
+ * Add support for mtime/ctime/atime
+ * Add bloom table for hash lookups
+ * Add bundle support (more than one slice)
+ * Support sha1-based merging
+ * Track installed bundles
+ * Convert to use GMainLoop
+ * Add public mount and merge into rest
+ * Add installed bundles symlinks
+ * Track kernel refs to inodes (lookup/forget)
+ * Free transient dirs and invalidate inodes when slices are removed
+ * Invalidate entries when slices are added
+ * Support renames of transient files
+ * Support access()
+ * Support triggers
+ */
+
 /* Inodes:
    32 bits
 
