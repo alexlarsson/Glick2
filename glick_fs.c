@@ -924,52 +924,69 @@ glick_fs_readlink (fuse_req_t req, fuse_ino_t ino)
     }
 }
 
+static GlickMountTransientFile *
+find_parent_dir_for_path_op (fuse_req_t req, fuse_ino_t parent, GlickMount **mount_out)
+{
+  gulong id;
+  gulong subdir;
+  GlickMount *mount;
+  GlickMountTransientFile *dir;
+
+  /* All non-root directores are transient files */
+  if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
+    {
+      fuse_reply_err (req, ENOTDIR);
+      return NULL;
+    }
+
+  /* Can't modify files in the root dir, only in mount dirs */
+  if (parent == ROOT_INODE)
+    {
+      fuse_reply_err (req, EACCES);
+      return NULL;
+    }
+
+  id = TRANSIENT_FILE_INODE_GET_MOUNT (parent);
+  mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
+  if (mount == NULL)
+    {
+      fuse_reply_err (req, ENOENT);
+      return NULL;
+    }
+
+  subdir = TRANSIENT_FILE_INODE_GET_TRANSIENT (parent);
+  dir = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (subdir));
+  if (dir == NULL)
+    {
+      fuse_reply_err (req, ENOENT);
+      return NULL;
+    }
+
+  if (!S_ISDIR (dir->mode))
+    {
+      fuse_reply_err (req, ENOTDIR);
+      return NULL;
+    }
+
+  *mount_out = mount;
+  return dir;
+}
+
+
 static void
 glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
 		mode_t mode)
 {
   struct fuse_entry_param e = {0};
-  gulong id;
-  gulong subdir;
   GlickMount *mount;
   GlickMountTransientFile *dir, *file;
   char *path;
 
   __debug__ (("glick_fs_mkdir %x %s %x\n", (int)parent, name, mode));
 
-  if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
-    {
-      fuse_reply_err (req, ENOTDIR);
-      return;
-    }
-
-  if (parent == ROOT_INODE)
-    {
-      fuse_reply_err (req, EACCES);
-      return;
-    }
-
-  id = TRANSIENT_FILE_INODE_GET_MOUNT (parent);
-  subdir = TRANSIENT_FILE_INODE_GET_TRANSIENT (parent);
-
-  mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
-  if (mount == NULL)
-    {
-      fuse_reply_err (req, ENOENT);
-      return;
-    }
-
-  dir = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (subdir));
+  dir = find_parent_dir_for_path_op (req, parent, &mount);
   if (dir == NULL)
-    {
-      fuse_reply_err (req, ENOENT);
-      return;
-    }
-  if (!S_ISDIR (dir->mode))
-    {
-      fuse_reply_err (req, ENOTDIR);
-      return;
-    }
+    return;
 
   path = g_build_filename (dir->path, name, NULL);
   if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
@@ -1005,47 +1022,15 @@ glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
 static void
 glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
 {
-  gulong id;
-  gulong subdir;
   GlickMount *mount;
   GlickMountTransientFile *dir, *file;
   char *path;
 
   __debug__ (("glick_fs_rmdir %x %s\n", (int)parent, name));
 
-  if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
-    {
-      fuse_reply_err (req, ENOTDIR);
-      return;
-    }
-
-  if (parent == ROOT_INODE)
-    {
-      fuse_reply_err (req, EACCES);
-      return;
-    }
-
-  id = TRANSIENT_FILE_INODE_GET_MOUNT (parent);
-  subdir = TRANSIENT_FILE_INODE_GET_TRANSIENT (parent);
-
-  mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
-  if (mount == NULL)
-    {
-      fuse_reply_err (req, ENOENT);
-      return;
-    }
-
-  dir = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (subdir));
+  dir = find_parent_dir_for_path_op (req, parent, &mount);
   if (dir == NULL)
-    {
-      fuse_reply_err (req, ENOENT);
-      return;
-    }
-  if (!S_ISDIR (dir->mode))
-    {
-      fuse_reply_err (req, ENOTDIR);
-      return;
-    }
+    return;
 
   path = g_build_filename (dir->path, name, NULL);
   if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
@@ -1120,45 +1105,14 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
   else if (S_ISREG (mode))
     {
       struct fuse_entry_param e = {0};
-      gulong id;
-      gulong subdir;
       GlickMount *mount;
       GlickMountTransientFile *dir, *file;
       char *path;
 
-      if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
-	{
-	  fuse_reply_err (req, ENOTDIR);
-	  return;
-	}
 
-      if (parent == ROOT_INODE)
-	{
-	  fuse_reply_err (req, EACCES);
-	  return;
-	}
-
-      id = TRANSIENT_FILE_INODE_GET_MOUNT (parent);
-      subdir = TRANSIENT_FILE_INODE_GET_TRANSIENT (parent);
-
-      mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
-      if (mount == NULL)
-	{
-	  fuse_reply_err (req, ENOENT);
-	  return;
-	}
-
-      dir = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (subdir));
+      dir = find_parent_dir_for_path_op (req, parent, &mount);
       if (dir == NULL)
-	{
-	  fuse_reply_err (req, ENOENT);
-	  return;
-	}
-      if (!S_ISDIR (dir->mode))
-	{
-	  fuse_reply_err (req, ENOTDIR);
-	  return;
-	}
+	return;
 
       path = g_build_filename (dir->path, name, NULL);
       if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
@@ -1212,47 +1166,15 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 static void
 glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
 {
-  gulong id;
-  gulong subdir;
   GlickMount *mount;
   GlickMountTransientFile *dir, *file;
   char *path;
 
   __debug__ (("glick_fs_unlink %x %s\n", (int)parent, name));
 
-  if (INODE_IS_SLICE_FILE (parent) || parent == SOCKET_INODE)
-    {
-      fuse_reply_err (req, ENOTDIR);
-      return;
-    }
-
-  if (parent == ROOT_INODE)
-    {
-      fuse_reply_err (req, EACCES);
-      return;
-    }
-
-  id = TRANSIENT_FILE_INODE_GET_MOUNT (parent);
-  subdir = TRANSIENT_FILE_INODE_GET_TRANSIENT (parent);
-
-  mount = g_hash_table_lookup (glick_mounts_by_id, GINT_TO_POINTER (id));
-  if (mount == NULL)
-    {
-      fuse_reply_err (req, ENOENT);
-      return;
-    }
-
-  dir = g_hash_table_lookup (mount->inode_to_file, GINT_TO_POINTER (subdir));
+  dir = find_parent_dir_for_path_op (req, parent, &mount);
   if (dir == NULL)
-    {
-      fuse_reply_err (req, ENOENT);
-      return;
-    }
-  if (!S_ISDIR (dir->mode))
-    {
-      fuse_reply_err (req, ENOTDIR);
-      return;
-    }
+    return;
 
   path = g_build_filename (dir->path, name, NULL);
   if (glick_mount_lookup_path (mount, path, NULL, NULL) != NULL)
