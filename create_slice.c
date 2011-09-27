@@ -245,39 +245,6 @@ collect_inode (SFile *file, void *user_data)
   inode_data->hash[bucket].inode = GUINT16_TO_LE (file->inode);
 }
 
-void
-collect_data (SFile *file, void *user_data)
-{
-  GOutputStream *output = G_OUTPUT_STREAM (user_data);
-  gssize size;
-  GFile *f;
-  GError *error;
-  GFileInputStream *in;
-
-  if (! S_ISREG (file->statbuf.st_mode))
-    return;
-
-  f = g_file_new_for_path (file->full_path);
-  error = NULL;
-  in = g_file_read (f, NULL, &error);
-  g_object_unref (f);
-  if (in == NULL) {
-    g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
-    exit (1);
-  }
-  size = g_output_stream_splice (output, G_INPUT_STREAM (in),
-				 G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE, NULL, &error);
-  if (size < 0) {
-    g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
-    exit (1);
-  }
-  if (size != file->statbuf.st_size) {
-    g_printerr ("Wrong fie size for %s. Did it change during scan?\n", file->full_path);
-    exit (1);
-  }
-  g_object_unref (in);
-}
-
 static gint
 find_closest_shift (gint n)
 {
@@ -289,31 +256,35 @@ find_closest_shift (gint n)
   return i;
 }
 
-
-int
-main (int argc, char *argv[])
-{
+typedef struct {
+  guint32 flags;
+  guint32 size;
+  GlickSliceHeader header;
+  guint32 n_inodes;
+  guint32 hash_shift;
+  guint32 n_hashes;
+  guint32 n_dirents;
+  char *strings;
+  guint32 strings_size;
+  GlickSliceHash *hash;
+  GlickSliceInode *inodes;
+  GlickSliceDirEntry *dirents;
+  guint64 data_size;
+  GChecksum *checksum;
   SFile *root;
+} Slice;
+
+
+Slice *
+slice_new (SFile *root)
+{
   guint32 n_inodes;
   guint32 n_hashes;
   guint32 hash_shift;
   StringData string_data;
   InodeData inode_data;
-  GlickSliceRoot slice_root = { 0 };
-  gsize offset, padding;
-  GFile *f;
-  GFileOutputStream *output;
-  GError *error;
-  char pad[4096] = {0 };
-
-  g_type_init ();
-
-  if (argc != 3) {
-    g_printerr ("Usage: create_slice <dir> <filename>\n");
-    return 1;
-  }
-
-  root = slurp_files (argv[1], "/", "/");
+  Slice *slice;
+  guint32 hash_size, inodes_size, dirents_size;
 
   n_inodes = 0;
   visit_depth_first (root, assign_inode, &n_inodes);
@@ -340,94 +311,333 @@ main (int argc, char *argv[])
 
   visit_depth_first (root, collect_inode, &inode_data);
 
-  slice_root.glick_version = 0;
+  slice = g_new0 (Slice, 1);
 
-  offset = sizeof (slice_root);
+  slice->root = root;
+  slice->size = sizeof (GlickSliceHeader);
 
-  slice_root.hash_offset = GUINT32_TO_LE (offset);
-  slice_root.hash_shift = GUINT32_TO_LE (hash_shift);
-  offset += sizeof (GlickSliceHash) * n_hashes;
+  slice->n_hashes = n_hashes;
+  slice->hash_shift = hash_shift;
+  slice->hash = inode_data.hash;
+  slice->header.hash_offset = GUINT32_TO_LE (slice->size);
+  slice->header.hash_shift = GUINT32_TO_LE (hash_shift);
+  hash_size = sizeof (GlickSliceHash) * n_hashes;
+  slice->size += hash_size;
 
-  slice_root.inodes_offset = GUINT32_TO_LE (offset);
-  slice_root.num_inodes = GUINT32_TO_LE (n_inodes);
-  offset += sizeof (GlickSliceInode) * n_inodes;
+  slice->n_inodes = n_inodes;
+  slice->inodes = inode_data.inodes;
+  slice->header.inodes_offset = GUINT32_TO_LE (slice->size);
+  slice->header.num_inodes = GUINT32_TO_LE (n_inodes);
+  inodes_size = sizeof (GlickSliceInode) * n_inodes;
+  slice->size += inodes_size;
 
-  slice_root.dirs_offset = GUINT32_TO_LE (offset);
-  slice_root.num_dirs = GUINT32_TO_LE (inode_data.last_dirent);
-  offset += sizeof (GlickSliceDirEntry) * inode_data.last_dirent;
+  slice->dirents = inode_data.dirents;
+  slice->n_dirents = inode_data.last_dirent;
+  slice->header.dirs_offset = GUINT32_TO_LE (slice->size);
+  slice->header.num_dirs = GUINT32_TO_LE (inode_data.last_dirent);
+  dirents_size = sizeof (GlickSliceDirEntry) * inode_data.last_dirent;
+  slice->size += dirents_size;
 
-  slice_root.strings_offset = GUINT32_TO_LE (offset);
-  slice_root.strings_size = GUINT32_TO_LE (string_data.data->len);
-  offset += string_data.data->len;
+  slice->strings_size = string_data.data->len;
+  slice->strings = g_string_free (string_data.data, FALSE);
+  slice->header.strings_offset = GUINT32_TO_LE (slice->size);
+  slice->header.strings_size = GUINT32_TO_LE (slice->strings_size);
+  slice->size += slice->strings_size;
 
-  // Round up to even page
-  padding = offset % 4096;
-  offset += padding;
+  g_hash_table_destroy (string_data.lookup);
 
-  slice_root.data_offset = GUINT32_TO_LE (offset);
-  slice_root.data_size = GUINT64_TO_LE (inode_data.data_offset);
+  slice->data_size = inode_data.data_offset;
 
-  slice_root.slice_length = GUINT32_TO_LE (offset);
+  slice->checksum = g_checksum_new (G_CHECKSUM_SHA1);
+
+  g_checksum_update (slice->checksum, (guchar *)&slice->header, sizeof (GlickSliceHeader));
+  g_checksum_update (slice->checksum, (guchar *)slice->hash, hash_size);
+  g_checksum_update (slice->checksum, (guchar *)slice->inodes, inodes_size);
+  g_checksum_update (slice->checksum, (guchar *)slice->dirents, dirents_size);
+  g_checksum_update (slice->checksum, (guchar *)slice->strings, slice->strings_size);
+
+  return slice;
+}
+
+void
+slice_free (Slice *slice)
+{
+  g_free (slice->strings);
+  g_free (slice->hash);
+  g_free (slice->inodes);
+  g_free (slice->dirents);
+  g_checksum_free (slice->checksum);
+  // TODO: Free slice->root
+  g_free (slice);
+}
+
+gboolean
+slice_write_header (Slice *slice, GOutputStream *output, GError **error)
+{
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  &slice->header, sizeof (slice->header),
+				  NULL, NULL, error)) {
+    return FALSE;
+  }
+
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  slice->hash, sizeof (GlickSliceHash) * slice->n_hashes,
+				  NULL, NULL, error)) {
+    return FALSE;
+  }
+
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  slice->inodes, sizeof (GlickSliceInode) * slice->n_inodes,
+				  NULL, NULL, error)) {
+    return FALSE;
+  }
+
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  slice->dirents, sizeof (GlickSliceDirEntry) * slice->n_dirents,
+				  NULL, NULL, error)) {
+    return FALSE;
+  }
+
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  slice->strings, slice->strings_size,
+				  NULL, NULL, error)) {
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+struct CollectData {
+  GOutputStream *output;
+  Slice *slice;
+  GError *error;
+};
+
+void
+collect_data (SFile *file, void *user_data)
+{
+  struct CollectData *data = user_data;
+  GOutputStream *output = data->output;
+  gssize size;
+  GFile *f;
+  GError *error;
+  GFileInputStream *in;
+
+  if (! S_ISREG (file->statbuf.st_mode))
+    return;
+
+  f = g_file_new_for_path (file->full_path);
+  error = NULL;
+  in = g_file_read (f, NULL, &error);
+  g_object_unref (f);
+  if (in == NULL) {
+    g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
+    exit (1);
+  }
+  // TODO: Update checksum
+  size = g_output_stream_splice (output, G_INPUT_STREAM (in),
+				 G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE, NULL, &error);
+  if (size < 0) {
+    g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
+    exit (1);
+  }
+  if (size != file->statbuf.st_size) {
+    g_printerr ("Wrong fie size for %s. Did it change during scan?\n", file->full_path);
+    exit (1);
+  }
+  g_object_unref (in);
+}
+
+gboolean
+slice_write_data (Slice *slice, GOutputStream *output, GError **error)
+{
+  struct CollectData data;
+  data.output = output;
+  data.slice = slice;
+  data.error = NULL;
+  // TODO: Error checking
+  visit_depth_first (slice->root, collect_data, &data);
+  return TRUE;
+}
+
+
+typedef struct {
+  char *id;
+  char *version;
+  GList *slices;
+} Bundle;
+
+
+Bundle *
+bundle_new (char *id, char *version)
+{
+  Bundle *bundle;
+
+  bundle = g_new0 (Bundle, 1);
+  bundle->id = g_strdup (id);
+  bundle->version = g_strdup (version);
+
+  return bundle;
+}
+
+void
+bundle_add_slice (Bundle *bundle, Slice *slice)
+{
+  bundle->slices = g_list_append (bundle->slices, slice);
+}
+
+void
+bundle_free (Bundle *bundle)
+{
+  GList *l;
+  for (l = bundle->slices; l != NULL; l = l->next)
+    slice_free (l->data);
+
+  g_free (bundle);
+}
+
+gboolean
+bundle_write (Bundle *bundle, GFile *dest, GError **error)
+{
+  GFileOutputStream *output;
+  char *header_data;
+  gsize header_data_len;
+  GlickBundleHeader *header;
+  GlickSliceRef *slice_refs, *ref;
+  gsize id_offset;
+  gsize version_offset;
+  goffset offset, padding;;
+  char pad[4096] = {0 };
+  GList *l;
+  int i;
+
+  output = g_file_create (dest, 0, NULL, error);
+  if (output == NULL)
+    return FALSE;
+
+  header_data_len =
+    sizeof (GlickBundleHeader) +
+    g_list_length (bundle->slices) * sizeof (GlickSliceRef) +
+    strlen (bundle->id) + strlen (bundle->version);
+  header_data = g_malloc0 (header_data_len);
+  header = (GlickBundleHeader *)header_data;
+  slice_refs = (GlickSliceRef *)(header_data + sizeof (GlickBundleHeader));
+
+  memcpy (header->glick_magic, GLICK_MAGIC, 8);
+  header->glick_version = GUINT32_TO_LE (GLICK_VERSION);
+  header->header_size = GUINT32_TO_LE (header_data_len);
+  id_offset =
+    sizeof (GlickBundleHeader) +
+    g_list_length (bundle->slices) * sizeof (GlickSliceRef);
+  version_offset = id_offset + strlen (bundle->id);
+  memcpy (header_data + id_offset, bundle->id, strlen (bundle->id));
+  memcpy (header_data + version_offset, bundle->version, strlen (bundle->version));
+  header->bundle_id_offset = GUINT32_TO_LE (id_offset);
+  header->bundle_id_size = GUINT32_TO_LE (strlen (bundle->id));
+  header->bundle_version_offset = GUINT32_TO_LE (version_offset);
+  header->bundle_version_size = GUINT32_TO_LE (strlen (bundle->version));
+  header->slices_offset = GUINT32_TO_LE (sizeof (GlickBundleHeader));
+  header->num_slices = GUINT32_TO_LE (g_list_length (bundle->slices));
+
+  /* Write out the header, even though its not up-to-date yet, so that
+     we get the following data positioned yet, then we seek back and update */
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  header_data, header_data_len,
+				  NULL, NULL, error)) {
+    return FALSE;
+  }
+
+  offset = header_data_len;
+
+  /* Write headers */
+  for (l = bundle->slices, i = 0; l != NULL; l = l->next, i++) {
+    Slice *slice = l->data;
+    ref = &slice_refs[i];
+
+    // Round up to even page for next header
+    padding = offset % 4096;
+    if (padding != 0)
+      padding = 4096-padding;
+    offset += padding;
+    if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				    pad, padding,
+				    NULL, NULL, error))
+      return FALSE;
+
+    ref->flags = GUINT32_TO_LE (slice->flags);
+    ref->header_offset = GUINT64_TO_LE (offset);
+    ref->header_size = GUINT64_TO_LE (slice->size);
+    offset += slice->size;
+
+    if (!slice_write_header (slice, G_OUTPUT_STREAM (output), error))
+      return FALSE;
+  }
+
+  /* Write data */
+  for (l = bundle->slices, i = 0; l != NULL; l = l->next, i++) {
+    Slice *slice = l->data;
+    ref = &slice_refs[i];
+
+    ref->data_offset = GUINT64_TO_LE (offset);
+    ref->data_size = GUINT64_TO_LE (slice->data_size);
+    offset += slice->data_size;
+
+    if (!slice_write_data (slice, G_OUTPUT_STREAM (output), error))
+      return FALSE;
+
+    /* TODO: Update ref->checksum */
+  }
+
+  /* Seek back to start and rewrite updated header */
+  if (!g_seekable_seek (G_SEEKABLE (output), 0, G_SEEK_SET, NULL, error)) {
+    return FALSE;
+  }
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  header_data, header_data_len,
+				  NULL, NULL, error)) {
+    return FALSE;
+  }
+
+  if (!g_output_stream_close (G_OUTPUT_STREAM (output), NULL, error)) {
+    g_object_unref (output);
+    return FALSE;
+  }
+
+  g_object_unref (output);
+  return TRUE;
+}
+
+int
+main (int argc, char *argv[])
+{
+  SFile *root;
+  GFile *f;
+  Slice *slice;
+  Bundle *bundle;
+  GError *error;
+
+  g_type_init ();
+
+  if (argc != 3) {
+    g_printerr ("Usage: create_slice <dir> <filename>\n");
+    return 1;
+  }
+
+  root = slurp_files (argv[1], "/", "/");
+
+  slice = slice_new (root);
+  bundle = bundle_new ("org.gnome.Test", "1.0");
+  bundle_add_slice (bundle, slice);
 
   f = g_file_new_for_commandline_arg (argv[2]);
 
   error = NULL;
-  output = g_file_create (f, 0, NULL, &error);
-  g_object_unref (f);
-  if (output == NULL) {
+  if (!bundle_write (bundle, f, &error)) {
     g_printerr ("Can't open output: %s\n", error->message);
     return 1;
   }
 
-  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
-				  &slice_root, sizeof (slice_root),
-				  NULL, NULL, &error)) {
-    g_printerr ("Can't write output: %s\n", error->message);
-    return 1;
-  }
-
-  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
-				  inode_data.hash, sizeof (GlickSliceHash) * n_hashes,
-				  NULL, NULL, &error)) {
-    g_printerr ("Can't write output: %s\n", error->message);
-    return 1;
-  }
-
-  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
-				  inode_data.inodes, sizeof (GlickSliceInode) * n_inodes,
-				  NULL, NULL, &error)) {
-    g_printerr ("Can't write output: %s\n", error->message);
-    return 1;
-  }
-
-  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
-				  inode_data.dirents, sizeof (GlickSliceDirEntry) * inode_data.last_dirent,
-				  NULL, NULL, &error)) {
-    g_printerr ("Can't write output: %s\n", error->message);
-    return 1;
-  }
-
-  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
-				  string_data.data->str, string_data.data->len,
-				  NULL, NULL, &error)) {
-    g_printerr ("Can't write output: %s\n", error->message);
-    return 1;
-  }
-
-  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
-				  pad, padding,
-				  NULL, NULL, &error)) {
-    g_printerr ("Can't write output: %s\n", error->message);
-    return 1;
-  }
-
-  visit_depth_first (root, collect_data, output);
-
-  if (!g_output_stream_close (G_OUTPUT_STREAM (output), NULL, &error)) {
-    g_printerr ("Can't write output: %s\n", error->message);
-    return 1;
-  }
-  g_object_unref (output);
+  g_object_unref (f);
 
   return 0;
 }
