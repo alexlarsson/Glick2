@@ -518,6 +518,7 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 {
   struct dirbuf *b;
   GList *l;
+  GHashTable *names_used;
 
   __debug__ (("glick_fs_opendir %x\n", (int)ino));
   fi->fh = 0;
@@ -531,8 +532,6 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
   b = dirbuf_new ();
 
   dirbuf_add (req, b, ".", ino);
-
-  // TODO: Avoid duplicates!
 
   if (ino == ROOT_INODE)
     {
@@ -552,6 +551,8 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
       guint32 dir_path_hash;
       GlickMount *mount;
       GlickMountTransientFile *dir;
+
+      names_used = g_hash_table_new (g_direct_hash, g_direct_equal);
 
       dir = get_transient_file_from_inode (ino, &mount);
       if (dir == NULL)
@@ -590,8 +591,11 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 		  if (entry_inode < slice->num_inodes)
 		    {
 		      const char *name = glick_slice_lookup_string (slice, GUINT32_FROM_LE (slice->inodes[entry_inode].name));
-		      if (name != NULL)
-			dirbuf_add (req, b, name, SLICE_FILE_INODE(slice->id, entry_inode));
+		      if (name != NULL && g_hash_table_lookup (names_used, name) == NULL)
+			{
+			  g_hash_table_insert (names_used, (char *)name, (char *)name);
+			  dirbuf_add (req, b, name, SLICE_FILE_INODE(slice->id, entry_inode));
+			}
 		    }
 		}
 	    }
@@ -601,11 +605,15 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 	{
 	  GlickMountTransientFile *child = l->data;
 
-	  if (child->file_ref_count > 0 || child->owned)
+	  if ((child->file_ref_count > 0 || child->owned) &&
+	      g_hash_table_lookup (names_used, child->name) == NULL)
 	    {
+	      g_hash_table_insert (names_used, (char *)child->name, (char *)child->name);
 	      dirbuf_add (req, b, child->name, TRANSIENT_FILE_INODE(mount->id, child->inode));
 	    }
 	}
+
+      g_hash_table_destroy (names_used);
     }
 
   fi->fh = (guint64)b;
