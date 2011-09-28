@@ -607,6 +607,10 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
   return TRUE;
 }
 
+#define BUNDLE_GROUP_NAME "Bundle"
+#define BUNDLE_KEY_ID "Id"
+#define BUNDLE_KEY_VERSION "Version"
+
 int
 main (int argc, char *argv[])
 {
@@ -615,23 +619,45 @@ main (int argc, char *argv[])
   Slice *slice;
   Bundle *bundle;
   GError *error;
+  GKeyFile *config;
+  char *id, *version;
 
   g_type_init ();
 
-  if (argc != 3) {
-    g_printerr ("Usage: create_slice <dir> <filename>\n");
+  if (argc != 4) {
+    g_printerr ("Usage: create_slice <description> <dir> <filename>\n");
     return 1;
   }
 
-  root = slurp_files (argv[1], "/", "/");
+  error = NULL;
+  config = g_key_file_new ();
+  if (!g_key_file_load_from_file (config, argv[1],G_KEY_FILE_NONE, &error)) {
+    g_printerr ("Can't open bundle description: %s\n", error->message);
+    return 1;
+  }
+
+  id = g_key_file_get_string (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_ID, &error);
+  if (id == NULL)
+    {
+      g_printerr ("No bundle id specified\n");
+      return 1;
+    }
+  version = g_key_file_get_string (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_VERSION, &error);
+  if (version == NULL)
+    {
+      g_printerr ("No bundle version specified\n");
+      return 1;
+    }
+
+  bundle = bundle_new (id, version);
+
+  root = slurp_files (argv[2], "/", "/");
 
   slice = slice_new (root);
-  bundle = bundle_new ("org.gnome.Test", "1.0");
   bundle_add_slice (bundle, slice);
 
-  f = g_file_new_for_commandline_arg (argv[2]);
+  f = g_file_new_for_commandline_arg (argv[3]);
 
-  error = NULL;
   if (!bundle_write (bundle, f, &error)) {
     g_printerr ("Can't open output: %s\n", error->message);
     return 1;
