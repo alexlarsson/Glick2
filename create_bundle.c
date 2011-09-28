@@ -464,6 +464,7 @@ slice_write_data (Slice *slice, GOutputStream *output, GError **error)
 typedef struct {
   char *id;
   char *version;
+  char *default_executable;
   GList *slices;
 } Bundle;
 
@@ -487,11 +488,22 @@ bundle_add_slice (Bundle *bundle, Slice *slice)
 }
 
 void
+bundle_set_default_executable (Bundle *bundle, const char *exec)
+{
+  g_free (bundle->default_executable);
+  bundle->default_executable = g_strdup (exec);
+}
+
+void
 bundle_free (Bundle *bundle)
 {
   GList *l;
   for (l = bundle->slices; l != NULL; l = l->next)
     slice_free (l->data);
+
+  g_free (bundle->id);
+  g_free (bundle->version);
+  g_free (bundle->default_executable);
 
   g_free (bundle);
 }
@@ -504,9 +516,9 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
   gsize header_data_len;
   GlickBundleHeader *header;
   GlickSliceRef *slice_refs, *ref;
-  gsize id_offset;
-  gsize version_offset;
-  goffset offset, padding;;
+  gsize id_offset, version_offset, exec_offset;
+  goffset offset, padding;
+  char *exec;
   char pad[4096] = {0 };
   GList *l;
   int i;
@@ -515,10 +527,14 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
   if (output == NULL)
     return FALSE;
 
+  exec = bundle->default_executable;
+  if (exec == NULL)
+    exec = "";
+
   header_data_len =
     sizeof (GlickBundleHeader) +
     g_list_length (bundle->slices) * sizeof (GlickSliceRef) +
-    strlen (bundle->id) + strlen (bundle->version);
+    strlen (bundle->id) + strlen (bundle->version) + strlen (exec);
   header_data = g_malloc0 (header_data_len);
   header = (GlickBundleHeader *)header_data;
   slice_refs = (GlickSliceRef *)(header_data + sizeof (GlickBundleHeader));
@@ -530,12 +546,19 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
     sizeof (GlickBundleHeader) +
     g_list_length (bundle->slices) * sizeof (GlickSliceRef);
   version_offset = id_offset + strlen (bundle->id);
+  exec_offset = version_offset + strlen (bundle->version);
+
   memcpy (header_data + id_offset, bundle->id, strlen (bundle->id));
   memcpy (header_data + version_offset, bundle->version, strlen (bundle->version));
+  memcpy (header_data + exec_offset, exec, strlen (exec));
   header->bundle_id_offset = GUINT32_TO_LE (id_offset);
   header->bundle_id_size = GUINT32_TO_LE (strlen (bundle->id));
   header->bundle_version_offset = GUINT32_TO_LE (version_offset);
   header->bundle_version_size = GUINT32_TO_LE (strlen (bundle->version));
+  if (bundle->default_executable != NULL) {
+    header->exec_offset = GUINT32_TO_LE (exec_offset);
+    header->exec_size = GUINT32_TO_LE (strlen (exec));
+  }
   header->slices_offset = GUINT32_TO_LE (sizeof (GlickBundleHeader));
   header->num_slices = GUINT32_TO_LE (g_list_length (bundle->slices));
 
@@ -610,6 +633,7 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
 #define BUNDLE_GROUP_NAME "Bundle"
 #define BUNDLE_KEY_ID "Id"
 #define BUNDLE_KEY_VERSION "Version"
+#define BUNDLE_KEY_EXEC "Exec"
 
 int
 main (int argc, char *argv[])
@@ -620,12 +644,12 @@ main (int argc, char *argv[])
   Bundle *bundle;
   GError *error;
   GKeyFile *config;
-  char *id, *version;
+  char *id, *version, *exec;
 
   g_type_init ();
 
   if (argc != 4) {
-    g_printerr ("Usage: create_slice <description> <dir> <filename>\n");
+    g_printerr ("Usage: create_bundle <description> <dir> <filename>\n");
     return 1;
   }
 
@@ -650,6 +674,10 @@ main (int argc, char *argv[])
     }
 
   bundle = bundle_new (id, version);
+
+  exec = g_key_file_get_string (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_EXEC, &error);
+  if (exec)
+    bundle_set_default_executable (bundle, exec);
 
   root = slurp_files (argv[2], "/", "/");
 

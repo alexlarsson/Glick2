@@ -17,6 +17,8 @@ typedef struct {
   guint32 bundle_id_size;
   guint32 bundle_version_offset;
   guint32 bundle_version_size;
+  guint32 exec_offset;
+  guint32 exec_size;
   guint32 slices_offset;
   guint32 num_slices;
 } GlickBundleHeader;
