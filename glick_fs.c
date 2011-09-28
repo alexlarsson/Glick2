@@ -106,6 +106,11 @@ typedef struct {
   GList *slices;
 } GlickMount;
 
+typedef struct {
+  char *filename;
+  GList *slices;
+} GlickPublic;
+
 typedef struct GlickMountTransientFile GlickMountTransientFile;
 
 struct GlickMountTransientFile {
@@ -167,6 +172,7 @@ static GHashTable *glick_mounts_by_name; /* name -> GlickMount */
 static GlickMount *public_mount = NULL;
 static GList *glick_mounts = NULL; /* list of GlickMount */
 static GList *glick_mount_refs = NULL; /* list of GlickMountRefs */
+static GList *glick_publics = NULL; /* list of GlickPublic */
 static int next_glick_mount_id = 3;
 
 static GList *glick_slices = NULL; /* list of GlickSlice */
@@ -193,6 +199,7 @@ void glick_mount_add_slice (GlickMount *mount, GlickSlice *slice);
 static gboolean mount_ref_data_cb (GIOChannel   *source,
 				   GIOCondition  condition,
 				   gpointer      data);
+void glick_public_apply_to_mount (GlickPublic *public, GlickMount *mount);
 
 #if 1
 #define __debug__(x) g_print x
@@ -1712,6 +1719,7 @@ GlickMount *
 glick_mount_new (const char *name)
 {
   GlickMount *mount;
+  GList *l;
 
   mount = g_new0 (GlickMount, 1);
   mount->ref_count = 1;
@@ -1738,6 +1746,12 @@ glick_mount_new (const char *name)
 
   /* Always want a root */
   glick_mount_transient_file_new_dir (mount, NULL, "/", TRUE);
+
+  for (l = glick_publics; l != NULL; l = l->next)
+    {
+      GlickPublic *public = l->data;
+      glick_public_apply_to_mount (public, mount);
+    }
 
   return mount;
 
@@ -1942,6 +1956,75 @@ glick_mount_ref_handle_request (GlickMountRef *ref,
  out:
   send (ref->socket_fd, &reply, sizeof (reply), 0);
   close (fd);
+}
+
+void
+glick_public_apply_to_mount (GlickPublic *public, GlickMount *mount)
+{
+  GList *l;
+
+  for (l = public->slices; l != NULL; l = l->next)
+    {
+      GlickSlice *slice = l->data;
+      glick_mount_add_slice (mount, slice);
+    }
+}
+
+GlickPublic *
+glick_public_new (char *filename)
+{
+  char *data;
+  gsize header_size;
+  GlickBundleHeader *header;
+  guint32 num_slices;
+  guint32 slices_offset, i;
+  GlickSliceRef *refs;
+  GList *l;
+  GlickPublic *public;
+
+  int fd = open (filename, O_RDONLY);
+  if (fd == -1)
+    return NULL;
+
+  data = map_and_verify_bundle (fd, &header_size);
+  if (data == NULL)
+    return NULL;
+
+  public = g_new0 (GlickPublic, 1);
+  public->filename = g_strdup ("filename");
+
+  header = (GlickBundleHeader *)data;
+
+  slices_offset = GUINT32_FROM_LE (header->slices_offset);
+  num_slices = GUINT32_FROM_LE (header->num_slices);
+
+  refs = (GlickSliceRef *)(data + slices_offset);
+  for (i = 0; i < num_slices; i++)
+    {
+      GlickSliceRef *ref = &refs[i];
+      guint32 flags = GUINT32_FROM_LE (ref->flags);
+
+      if (flags & GLICK_SLICE_FLAGS_EXPORT)
+	{
+	  GlickSlice *slice = glick_slice_create (fd, ref);
+
+	  if (slice)
+	    public->slices = g_list_prepend (public->slices, slice);
+	}
+    }
+
+  munmap (data, header_size);
+
+  glick_publics = g_list_prepend (glick_publics, public);
+
+  for (l = glick_mounts; l != NULL; l = l->next)
+    {
+      GlickMount *mount = l->data;
+
+      glick_public_apply_to_mount (public, mount);
+    }
+
+  return public;
 }
 
 static gboolean
