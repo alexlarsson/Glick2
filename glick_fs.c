@@ -164,6 +164,7 @@ typedef struct {
 
 static GHashTable *glick_mounts_by_id; /* id -> GlickMount */
 static GHashTable *glick_mounts_by_name; /* name -> GlickMount */
+static GlickMount *public_mount = NULL;
 static GList *glick_mounts = NULL; /* list of GlickMount */
 static GList *glick_mount_refs = NULL; /* list of GlickMountRefs */
 static int next_glick_mount_id = 3;
@@ -1672,9 +1673,93 @@ glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice
   return NULL;
 }
 
+GlickMount *
+glick_mount_ref (GlickMount *mount)
+{
+  mount->ref_count++;
+  return mount;
+}
+
+void
+glick_mount_unref (GlickMount *mount)
+{
+  GList *l;
+
+  mount->ref_count--;
+  if (mount->ref_count == 0)
+    {
+      /* TODO: Free outstanding transient files */
+      g_hash_table_destroy (mount->inode_to_file);
+      g_hash_table_destroy (mount->path_to_file);
+
+      glick_mounts = g_list_remove (glick_mounts, mount);
+      g_hash_table_remove (glick_mounts_by_id, GINT_TO_POINTER (mount->id));
+      g_hash_table_remove (glick_mounts_by_name, mount->name);
+
+      for (l = mount->slices; l != NULL; l = l->next)
+	glick_slice_unref (l->data);
+
+      g_list_free (mount->slices);
+
+      g_free (mount->name);
+      g_free (mount->bundle_id);
+      g_free (mount->bundle_version);
+      g_free (mount);
+    }
+}
 
 GlickMount *
-glick_mount_new (int fd)
+glick_mount_new (const char *name)
+{
+  GlickMount *mount;
+
+  mount = g_new0 (GlickMount, 1);
+  mount->ref_count = 1;
+  mount->id = next_glick_mount_id++;
+
+  if (mount->id > MAX_MOUNT_ID)
+    {
+      g_warning ("Out of mount ids");
+      goto out;
+    }
+
+  if (name)
+    mount->name = g_strdup (name);
+  else
+    mount->name = g_strdup_printf ("%d", (int)mount->id);
+
+  mount->inode_to_file = g_hash_table_new (g_direct_hash, g_direct_equal);
+  mount->path_to_file = g_hash_table_new (g_str_hash, g_str_equal);
+  mount->next_mount_file_inode = 0;
+
+  glick_mounts = g_list_prepend (glick_mounts, mount);
+  g_hash_table_insert (glick_mounts_by_id, GINT_TO_POINTER (mount->id), mount);
+  g_hash_table_insert (glick_mounts_by_name, mount->name, mount);
+
+  /* Always want a root */
+  glick_mount_transient_file_new_dir (mount, NULL, "/", TRUE);
+
+  return mount;
+
+ out:
+  g_free (mount);
+  return NULL;
+}
+
+GlickMount *
+glick_mount_new_public (void)
+{
+  GlickMount *mount;
+
+  mount = glick_mount_new ("public");
+  if (mount == NULL)
+    return NULL;
+
+  return mount;
+}
+
+GlickMount *
+glick_mount_new_for_bundle (int fd)
 {
   GlickMount *mount;
   GlickBundleHeader *header;
@@ -1685,7 +1770,6 @@ glick_mount_new (int fd)
   guint32 slices_offset, i;
   guint64 slices_size;
   GlickSliceRef *refs;
-  GList *l;
 
   if (fstat (fd, &statbuf) != 0)
     return NULL;
@@ -1727,15 +1811,9 @@ glick_mount_new (int fd)
       return NULL;
     }
 
-  mount = g_new0 (GlickMount, 1);
-  mount->ref_count = 1;
-  mount->id = next_glick_mount_id++;
-
-  if (mount->id > MAX_MOUNT_ID)
-    {
-      g_warning ("Out of mount ids");
-      goto out;
-    }
+  mount = glick_mount_new (NULL);
+  if (mount == NULL)
+    goto out;
 
   slices_offset = GUINT32_FROM_LE (header->slices_offset);
   num_slices = GUINT32_FROM_LE (header->num_slices);
@@ -1764,63 +1842,15 @@ glick_mount_new (int fd)
   mount->bundle_version = g_strndup (data + GUINT32_FROM_LE (header->bundle_version_offset),
 				     GUINT32_FROM_LE (header->bundle_version_size));
 
-  mount->name = g_strdup_printf ("%d", (int)mount->id);
-
-
-  mount->inode_to_file = g_hash_table_new (g_direct_hash, g_direct_equal);
-  mount->path_to_file = g_hash_table_new (g_str_hash, g_str_equal);
-  mount->next_mount_file_inode = 0;
-
-  glick_mount_transient_file_new_dir (mount, NULL, "/", TRUE);
-
-  glick_mounts = g_list_prepend (glick_mounts, mount);
-  g_hash_table_insert (glick_mounts_by_id, GINT_TO_POINTER (mount->id), mount);
-  g_hash_table_insert (glick_mounts_by_name, mount->name, mount);
-
-
   munmap (data, header_size);
 
   return mount;
 
  out:
-  for (l = mount->slices; l != NULL; l = l->next)
-    glick_slice_unref ((GlickSlice *)l->data);
-  g_list_free (mount->slices);
-
   munmap (data, header_size);
-  g_free (mount->bundle_id);
-  g_free (mount->bundle_version);
-  g_free (mount);
+  if (mount != NULL)
+    glick_mount_unref (mount);
   return NULL;
-}
-
-GlickMount *
-glick_mount_ref (GlickMount *mount)
-{
-  mount->ref_count++;
-  return mount;
-}
-
-void
-glick_mount_unref (GlickMount *mount)
-{
-  GList *l;
-
-  mount->ref_count--;
-  if (mount->ref_count == 0)
-    {
-      glick_mounts = g_list_remove (glick_mounts, mount);
-      g_hash_table_remove (glick_mounts_by_id, GINT_TO_POINTER (mount->id));
-      g_hash_table_remove (glick_mounts_by_name, mount->name);
-
-      for (l = mount->slices; l != NULL; l = l->next)
-	glick_slice_unref (l->data);
-
-      g_list_free (mount->slices);
-
-      g_free (mount->name);
-      g_free (mount);
-    }
 }
 
 void
@@ -1874,7 +1904,7 @@ glick_mount_ref_handle_request (GlickMountRef *ref,
       goto out;
     }
 
-  ref->mount = glick_mount_new (fd);
+  ref->mount = glick_mount_new_for_bundle (fd);
   if (ref->mount == NULL)
     {
       reply.result = 4;
@@ -2054,6 +2084,8 @@ main_loop (struct fuse_session *se)
       set_one_signal_handler(SIGTERM, exit_handler) == -1 ||
       set_one_signal_handler(SIGPIPE, SIG_IGN) == -1)
     return -1;
+
+  public_mount = glick_mount_new_public ();
 
   fuse_channel = g_io_channel_unix_new (fuse_fd);
   g_io_add_watch (fuse_channel, G_IO_IN, got_fuse_request, se);
