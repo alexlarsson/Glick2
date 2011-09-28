@@ -124,6 +124,7 @@ struct GlickMountTransientFile {
   guint file_ref_count; /* This keeps directories alive if there is a owned file/dir in it */
   char *data;
   int fd;
+  int kernel_refs;
 
   GList *children;
 };
@@ -406,6 +407,11 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
       mount = g_hash_table_lookup (glick_mounts_by_name, name);
       if (mount)
 	{
+	  GlickMountTransientFile *file;
+
+	  file = g_hash_table_lookup (mount->inode_to_file, 0);
+	  file->kernel_refs++;
+
 	  e.ino = TRANSIENT_FILE_INODE_FROM_MOUNT (mount->id);
 	  e.attr.st_mode = S_IFDIR | 0755;
 	  e.attr.st_nlink = 2;
@@ -453,6 +459,7 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 			file = glick_mount_transient_file_new_dir (mount, parent_file, path, FALSE);
 		      g_free (path);
 
+		      file->kernel_refs++;
 		      glick_mount_transient_file_stat (file, &e.attr);
 		      e.ino = e.attr.st_ino;
 		      __debug__ (("replying with transient inode\n"));
@@ -477,6 +484,7 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 	      file = g_hash_table_lookup (mount->path_to_file, path);
 	      if (file != NULL && (file->file_ref_count > 0 || file->owned))
 		{
+		  file->kernel_refs++;
 		  glick_mount_transient_file_stat (file, &e.attr);
 		  e.ino = e.attr.st_ino;
 		  __debug__ (("replying with transient (reffed) inode\n"));
@@ -494,6 +502,23 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
   e.ino = 0;
   fuse_reply_entry (req, &e);
 }
+
+static void
+glick_fs_forget (fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
+{
+  GlickMountTransientFile *file;
+
+  if (!INODE_IS_SLICE_FILE (ino) &&
+      ino != SOCKET_INODE &&
+      ino != ROOT_INODE)
+    {
+      file = get_transient_file_from_inode (ino, NULL);
+      file->kernel_refs -= nlookup;
+    }
+
+  fuse_reply_none (req);
+}
+
 
 struct dirbuf {
   char *p;
@@ -1250,6 +1275,7 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
 static struct
 fuse_lowlevel_ops glick_fs_oper = {
   .lookup	= glick_fs_lookup,
+  .forget	= glick_fs_forget,
   .getattr	= glick_fs_getattr,
   .opendir	= glick_fs_opendir,
   .readdir	= glick_fs_readdir,
@@ -2200,6 +2226,8 @@ main_loop (struct fuse_session *se)
 
   ready_pipe_channel = g_io_channel_unix_new (master_socket_ready_pipe);
   g_io_add_watch (ready_pipe_channel, G_IO_IN, ready_pipe_cb, ready_pipe_channel);
+
+  glick_public_new ("test.bundle");
 
   g_main_loop_run (mainloop);
 
