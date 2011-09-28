@@ -4,7 +4,7 @@ PREFIX=/usr/local
 BINDIR=${PREFIX}/bin
 LIBDIR=${PREFIX}/lib
 
-all: private-mount glick2 to_c glick_fs create_slice
+all: private-mount glick2 to_c glick_fs create_bundle
 
 clean:
 	rm -f private-mount glick2 to_c glick_fs
@@ -24,5 +24,5 @@ glick2: glick2.c
 glick_fs: glick_fs.c glick.h
 	gcc ${CFLAGS} `pkg-config fuse glib-2.0 --cflags --libs` glick_fs.c -o glick_fs
 
-create_slice: create_slice.c
-	gcc ${CFLAGS} `pkg-config glib-2.0 gio-2.0 --cflags --libs` create_slice.c -o create_slice
+create_bundle: create_bundle.c
+	gcc ${CFLAGS} `pkg-config glib-2.0 gio-2.0 --cflags --libs` create_bundle.c -o create_bundle
