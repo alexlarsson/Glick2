@@ -31,7 +31,6 @@
  * Support renames of transient files
  * Support access()
  * Support triggers
- * Handle open files when slices/transients are removed. Always dup?
  */
 
 /* Inodes:
@@ -732,7 +731,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
       open->start = 0;
       open->end = -1;
       open->flags = fi->flags;
-      open->fd = file->fd;
+      open->fd = dup (file->fd);
       fi->fh = (guint64)open;
       fuse_reply_open (req, fi);
     }
@@ -762,7 +761,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	  if (S_ISREG (GUINT32_FROM_LE (inodep->mode)))
 	    {
 	      open = g_new0 (GlickOpenFile, 1);
-	      open->fd = slice->fd;
+	      open->fd = dup (slice->fd);
 	      open->start = slice->data_offset + GUINT64_FROM_LE (inodep->offset);
 	      open->end = open->start + GUINT64_FROM_LE (inodep->size);
 	      open->flags = fi->flags;
@@ -785,6 +784,7 @@ glick_fs_release (fuse_req_t req, fuse_ino_t ino,
 
   __debug__ (("glick_fs_release\n"));
 
+  close (open->fd);
   g_free (open);
   fuse_reply_err (req, 0);
 }
