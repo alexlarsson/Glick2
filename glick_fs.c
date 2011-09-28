@@ -23,7 +23,6 @@
  * Add bloom table for hash lookups
  * Support sha1-based merging
  * Track installed bundles
- * Convert to use GMainLoop
  * Add public mount and merge into rest
  * Add installed bundles symlinks
  * Track kernel refs to inodes (lookup/forget)
@@ -127,6 +126,7 @@ struct GlickMountTransientFile {
 typedef struct {
   int socket_fd;
   GlickMount *mount;
+  GIOChannel *channel;
 }  GlickMountRef;
 
 typedef struct {
@@ -176,6 +176,7 @@ static unsigned long fuse_generation = 1;
 static int master_socket_ready_pipe = 0;
 static int socket_created = 0;
 static int master_socket;
+static GMainLoop *mainloop;
 
 const char *glick_slice_lookup_string (GlickSlice *slice, size_t offset);
 GlickSliceInode * glick_slice_lookup_path (GlickSlice *slice, const char *path, guint32 path_hash, guint32 *inode_num);
@@ -188,6 +189,9 @@ void glick_mount_transient_file_unown (GlickMountTransientFile *file);
 void glick_mount_transient_file_own (GlickMountTransientFile *file);
 void glick_mount_transient_file_free (GlickMountTransientFile *file);
 void glick_mount_add_slice (GlickMount *mount, GlickSlice *slice);
+static gboolean mount_ref_data_cb (GIOChannel   *source,
+				   GIOCondition  condition,
+				   gpointer      data);
 
 #if 1
 #define __debug__(x) g_print x
@@ -1835,6 +1839,10 @@ glick_mount_ref_new (int fd)
 
   glick_mount_refs = g_list_prepend (glick_mount_refs, ref);
 
+  ref->channel = g_io_channel_unix_new (fd);
+
+  g_io_add_watch (ref->channel, G_IO_IN | G_IO_HUP, mount_ref_data_cb, ref);
+
   return ref;
 }
 
@@ -1846,6 +1854,7 @@ glick_mount_ref_free (GlickMountRef *ref)
   if (ref->mount)
     glick_mount_unref (ref->mount);
 
+  g_io_channel_unref (ref->channel);
   close (ref->socket_fd);
   g_free (ref);
 }
@@ -1880,145 +1889,182 @@ glick_mount_ref_handle_request (GlickMountRef *ref,
   close (fd);
 }
 
+static gboolean
+mount_ref_data_cb (GIOChannel   *source,
+		   GIOCondition  condition,
+		   gpointer      data)
+{
+  GlickMountRef *ref = data;
+
+  g_print ("mount_ref_data_cb %x\n", condition);
+
+  if (condition & G_IO_HUP)
+    {
+      __debug__ (("socket %d hung up\n", ref->socket_fd));
+      glick_mount_ref_free (ref);
+      return FALSE;
+    }
+
+  if (condition & G_IO_IN)
+    {
+      int res, passed_fd;
+      GlickMountRequestMsg request;
+      GlickMountRequestReply reply;
+
+      memset (&reply, 0, sizeof (reply));
+      res = recv_socket_message (ref->socket_fd, (char *)&request, sizeof (request), &passed_fd);
+      if (res != -1)
+	{
+	  if (res == 0 || passed_fd == -1)
+	    {
+	      fprintf (stderr, "Empty request\n");
+	      reply.result = 1;
+	      send (ref->socket_fd, &reply, sizeof (reply), 0);
+	    }
+	  else if (res != sizeof (request))
+	    {
+	      fprintf (stderr, "Invalid glick request size\n");
+	      reply.result = 2;
+	      close (passed_fd);
+	      send (ref->socket_fd, &reply, sizeof (reply), 0);
+	    }
+	  else
+	    {
+	      glick_mount_ref_handle_request (ref, &request, passed_fd);
+	    }
+	}
+    }
+
+  return TRUE;
+}
+
+static gboolean
+got_fuse_request (GIOChannel   *source,
+		  GIOCondition  condition,
+		  gpointer      data)
+{
+  struct fuse_session *se = data;
+  struct fuse_chan *ch = fuse_session_next_chan (se, NULL);
+  struct fuse_chan *tmpch = ch;
+  gsize bufsize = fuse_chan_bufsize (ch);
+  char *buf = g_malloc (bufsize);
+  int res;
+
+ retry:
+  res = fuse_chan_recv (&tmpch, buf, bufsize);
+  if (res == -EINTR)
+    goto retry;
+  if (res > 0)
+    fuse_session_process (se, buf, res, tmpch);
+
+  g_free (buf);
+
+  if (fuse_session_exited (se))
+    {
+      g_main_loop_quit (mainloop);
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+static gboolean
+new_client_cb (GIOChannel   *source,
+	       GIOCondition  condition,
+	       gpointer      data)
+{
+  int res;
+
+  res = accept (master_socket, NULL, NULL);
+
+  if (res == -1)
+    perror ("accept");
+  else
+    {
+      glick_mount_ref_new (res);
+    }
+
+  return TRUE;
+}
+
+static gboolean
+ready_pipe_cb (GIOChannel   *source,
+	       GIOCondition  condition,
+	       gpointer      data)
+{
+  GIOChannel *channel = data;
+  GIOChannel *master_channel;
+  int res;
+
+  /* Waiting for master socket to be ready */
+  res = listen (master_socket, 5);
+  if (res == -1)
+    perror ("listen");
+
+  close (master_socket_ready_pipe);
+  master_socket_ready_pipe = 0;
+
+  g_io_channel_unref (channel);
+
+  master_channel = g_io_channel_unix_new (master_socket);
+  g_io_add_watch (master_channel, G_IO_IN, new_client_cb, master_channel);
+
+  return FALSE;
+}
+
+static void exit_handler(int sig)
+{
+  (void) sig;
+  g_main_loop_quit (mainloop);
+}
+
+static int set_one_signal_handler(int sig, void (*handler)(int))
+{
+  struct sigaction sa;
+  struct sigaction old_sa;
+
+  memset (&sa, 0, sizeof (struct sigaction));
+  sa.sa_handler = handler;
+  sigemptyset (&(sa.sa_mask));
+  sa.sa_flags = 0;
+
+  if (sigaction (sig, NULL, &old_sa) == -1)
+    return FALSE;
+
+  if (old_sa.sa_handler == SIG_DFL &&
+      sigaction(sig, &sa, NULL) == -1)
+    return FALSE;
+
+  return TRUE;
+}
+
+
 int
 main_loop (struct fuse_session *se)
 {
   int res = 0;
   struct fuse_chan *ch = fuse_session_next_chan (se, NULL);
   int fuse_fd = fuse_chan_fd (ch);
-  gsize bufsize = fuse_chan_bufsize (ch);
-  char *buf = (char *) malloc (bufsize);
-  struct pollfd *polls;
-  int n_polls, polls_needed, i;
-  GlickMountRef *ref;
-  GList *l, *next;
+  GIOChannel *fuse_channel, *ready_pipe_channel;
 
-  if (!buf)
-    {
-      fprintf(stderr, "fuse: failed to allocate read buffer\n");
-      return -1;
-    }
+  mainloop = g_main_loop_new (NULL, TRUE);
 
-  n_polls = 16;
-  polls = g_new (struct pollfd, n_polls);
+  if (set_one_signal_handler(SIGHUP, exit_handler) == -1 ||
+      set_one_signal_handler(SIGINT, exit_handler) == -1 ||
+      set_one_signal_handler(SIGTERM, exit_handler) == -1 ||
+      set_one_signal_handler(SIGPIPE, SIG_IGN) == -1)
+    return -1;
 
-  while (!fuse_session_exited (se))
-    {
-      struct fuse_chan *tmpch = ch;
+  fuse_channel = g_io_channel_unix_new (fuse_fd);
+  g_io_add_watch (fuse_channel, G_IO_IN, got_fuse_request, se);
 
-      polls_needed = 2 + g_list_length (glick_mount_refs);
-      if (polls_needed > n_polls)
-	{
-	  n_polls = polls_needed;
-	  polls = g_renew (struct pollfd, polls, n_polls);
-	}
+  ready_pipe_channel = g_io_channel_unix_new (master_socket_ready_pipe);
+  g_io_add_watch (ready_pipe_channel, G_IO_IN, ready_pipe_cb, ready_pipe_channel);
 
-      i = 0;
-      polls[i].fd = fuse_fd;
-      polls[i].events = POLLIN;
-      polls[i].revents = 0;
-      i++;
+  g_main_loop_run (mainloop);
 
-      if (master_socket_ready_pipe != 0)
-	polls[i].fd = master_socket_ready_pipe;
-      else
-	polls[i].fd = master_socket;
-      polls[i].events = POLLIN;
-      polls[i].revents = 0;
-      i++;
-
-      for (l = glick_mount_refs; l != NULL; l = l->next)
-	{
-	  ref = l->data;
-
-	  polls[i].fd = ref->socket_fd;
-	  polls[i].events = POLLIN;
-	  polls[i].revents = 0;
-	  i++;
-	}
-
-      poll (polls, i, -1);
-
-      if (polls[0].revents != 0)
-	{
-	  res = fuse_chan_recv (&tmpch, buf, bufsize);
-	  if (res == -EINTR)
-	    continue;
-	  if (res <= 0)
-	    break;
-	  fuse_session_process (se, buf, res, tmpch);
-	}
-
-      /* Handle these before any new mount refs, as that may change the order of
-	 the ref list */
-      for (l = glick_mount_refs, i = 2; l != NULL; l = next, i++)
-	{
-	  ref = l->data;
-	  next = l->next;
-
-	  if (polls[i].revents & POLLHUP)
-	    {
-	      __debug__ (("socket %d hung up\n", i));
-	      glick_mount_ref_free (ref);
-	    }
-	  else if (polls[i].revents & POLLIN)
-	    {
-	      int res, passed_fd;
-	      GlickMountRequestMsg request;
-	      GlickMountRequestReply reply;
-
-	      memset (&reply, 0, sizeof (reply));
-	      res = recv_socket_message (ref->socket_fd, (char *)&request, sizeof (request), &passed_fd);
-	      if (res != -1)
-		{
-		  if (passed_fd == -1)
-		    {
-		      fprintf (stderr, "No fd passed\n");
-		      reply.result = 1;
-		      send (ref->socket_fd, &reply, sizeof (reply), 0);
-		    }
-		  else if (res != sizeof (request))
-		    {
-		      fprintf (stderr, "Invalid glick request size\n");
-		      reply.result = 2;
-		      close (passed_fd);
-		      send (ref->socket_fd, &reply, sizeof (reply), 0);
-		    }
-		  else
-		    {
-		      glick_mount_ref_handle_request (ref, &request, passed_fd);
-		    }
-		}
-	    }
-	}
-
-      if (polls[1].revents != 0)
-	{
-	  if (master_socket_ready_pipe != 0)
-	    {
-	      /* Waiting for master socket to be ready */
-	      res = listen (master_socket, 5);
-	      if (res == -1)
-		perror ("listen");
-
-	      close (master_socket_ready_pipe);
-	      master_socket_ready_pipe = 0;
-	    }
-	  else
-	    {
-	      int res;
-	      res = accept (master_socket, NULL, NULL);
-
-	      if (res == -1)
-		perror ("accept");
-	      else
-		glick_mount_ref_new (res);
-	    }
-	}
-    }
-
-  free (buf);
   fuse_session_reset (se);
+
   return res < 0 ? -1 : 0;
 }
 
@@ -2047,52 +2093,49 @@ main (int argc, char *argv[])
 			      sizeof glick_fs_oper, NULL);
       if (se != NULL)
 	{
-	  if (fuse_set_signal_handlers (se) != -1)
-	    {
-	      int sync_pipe[2];
-	      pid_t pid;
-	      char c = 'x';
-	      struct sockaddr_un local;
-	      int len;
+	  int sync_pipe[2];
+	  pid_t pid;
+	  char c = 'x';
+	  struct sockaddr_un local;
+	  int len;
 
-	      fuse_session_add_chan (se, ch);
+	  fuse_session_add_chan (se, ch);
 
-	      pipe (sync_pipe);
-	      master_socket_ready_pipe = sync_pipe[0];
-	      master_socket = socket (AF_UNIX, SOCK_SEQPACKET, 0);
+	  pipe (sync_pipe);
+	  master_socket_ready_pipe = sync_pipe[0];
+	  master_socket = socket (AF_UNIX, SOCK_SEQPACKET, 0);
 
-	      pid = fork ();
-	      if (pid == 0) {
-		char *socket_path;
-		int res;
+	  pid = fork ();
+	  if (pid == 0) {
+	    char *socket_path;
+	    int res;
 
-		close (sync_pipe[0]);
+	    close (sync_pipe[0]);
 
-		socket_path = g_build_filename (mountpoint, SOCKET_NAME, NULL);
+	    socket_path = g_build_filename (mountpoint, SOCKET_NAME, NULL);
 
-		local.sun_family = AF_UNIX;
-		strcpy (local.sun_path, socket_path);
-		len = strlen (local.sun_path) + sizeof (local.sun_family);
+	    local.sun_family = AF_UNIX;
+	    strcpy (local.sun_path, socket_path);
+	    len = strlen (local.sun_path) + sizeof (local.sun_family);
 
-		g_free (socket_path);
+	    g_free (socket_path);
 
-		res = bind (master_socket, (struct sockaddr *)&local, len);
-		if (res == -1)
-		  perror ("bind");
+	    res = bind (master_socket, (struct sockaddr *)&local, len);
+	    if (res == -1)
+	      perror ("bind");
 
-		write (sync_pipe[1], &c, 1);
-		close (sync_pipe[1]);
+	    write (sync_pipe[1], &c, 1);
+	    close (sync_pipe[1]);
 
-		/* child */
-		_exit (0);
-		return 0;
-	      }
-	      close (sync_pipe[1]);
+	    /* child */
+	    _exit (0);
+	    return 0;
+	  }
+	  close (sync_pipe[1]);
 
-	      err = main_loop (se);
-	      fuse_remove_signal_handlers (se);
-	      fuse_session_remove_chan (ch);
-	    }
+	  err = main_loop (se);
+	  fuse_session_remove_chan (ch);
+
 	  fuse_session_destroy (se);
 	}
       fuse_unmount (mountpoint, ch);
