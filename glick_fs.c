@@ -31,6 +31,7 @@
  * Support renames of transient files
  * Support access()
  * Support triggers
+ * Handle open files when slices/transients are removed. Always dup?
  */
 
 /* Inodes:
@@ -108,6 +109,7 @@ typedef struct {
 
 typedef struct {
   char *filename;
+  time_t mtime;
   GList *slices;
 } GlickPublic;
 
@@ -1924,6 +1926,14 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
   mount->slices = g_list_prepend (mount->slices, slice);
 }
 
+void
+glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice)
+{
+  /* TODO: Invalidate caches as needed  */
+  /* TODO: Remove unowned transients that no longer are backed by a slice */
+  mount->slices = g_list_remove (mount->slices, slice);
+}
+
 GlickMountRef *
 glick_mount_ref_new (int fd)
 {
@@ -1996,6 +2006,19 @@ glick_public_apply_to_mount (GlickPublic *public, GlickMount *mount)
     }
 }
 
+void
+glick_public_unapply_to_mount (GlickPublic *public, GlickMount *mount)
+{
+  GList *l;
+
+  for (l = public->slices; l != NULL; l = l->next)
+    {
+      GlickSlice *slice = l->data;
+      glick_mount_remove_slice (mount, slice);
+    }
+}
+
+
 GlickPublic *
 glick_public_new (char *filename)
 {
@@ -2007,9 +2030,13 @@ glick_public_new (char *filename)
   GlickSliceRef *refs;
   GList *l;
   GlickPublic *public;
+  struct stat statbuf;
 
   int fd = open (filename, O_RDONLY);
   if (fd == -1)
+    return NULL;
+
+  if (fstat (fd, &statbuf) != 0)
     return NULL;
 
   data = map_and_verify_bundle (fd, &header_size);
@@ -2018,6 +2045,7 @@ glick_public_new (char *filename)
 
   public = g_new0 (GlickPublic, 1);
   public->filename = g_strdup ("filename");
+  public->mtime = statbuf.st_mtime;
 
   header = (GlickBundleHeader *)data;
 
@@ -2051,6 +2079,95 @@ glick_public_new (char *filename)
     }
 
   return public;
+}
+
+void
+glick_public_free (GlickPublic *public)
+{
+  GList *l;
+
+  for (l = glick_mounts; l != NULL; l = l->next)
+    {
+      GlickMount *mount = l->data;
+
+      glick_public_unapply_to_mount (public, mount);
+    }
+
+  for (l = public->slices; l != NULL; l = l->next)
+    {
+      GlickSlice *slice = l->data;
+      glick_slice_unref (slice);
+    }
+  g_free (public->filename);
+  g_free (public);
+}
+
+static GlickPublic *
+find_public_for_file (GList *list, const char *path)
+{
+  GList *l;
+
+  for (l = list; l != NULL; l = l->next)
+    {
+      GlickPublic *public = l->data;
+
+      if (strcmp (public->filename, path) == 0)
+	return public;
+    }
+
+  return NULL;
+}
+
+static void
+scan_public_directory (const char *path)
+{
+  GDir *dir;
+  const char *child_name;
+  char *child_path;
+  GList *publics;
+  struct stat statbuf;
+  GlickPublic *old_public;
+  GList *l;
+
+  publics = g_list_copy (glick_publics);
+
+  dir = g_dir_open (path, 0, NULL);
+  if (dir != NULL)
+    {
+      while ((child_name = g_dir_read_name (dir)) != NULL)
+	{
+	  child_path = g_build_filename (path, child_name, NULL);
+
+	  if (stat (child_path, &statbuf) == 0 &&
+	      S_ISREG (statbuf.st_mode))
+	    {
+	      old_public = find_public_for_file (publics, child_path);
+	      if (old_public == NULL)
+		{
+		  glick_public_new (child_path);
+		}
+	      else
+		{
+		  publics = g_list_remove (publics, old_public);
+
+		  if (old_public->mtime != statbuf.st_mtime)
+		    {
+		      glick_public_free (old_public);
+		      glick_public_new (child_path);
+		    }
+		}
+	    }
+
+	  g_free (child_path);
+	}
+      g_dir_close (dir);
+    }
+
+  for (l = publics; l != NULL; l = l->next)
+    {
+      old_public = l->data;
+      glick_public_free (old_public);
+    }
 }
 
 static gboolean
@@ -2210,6 +2327,7 @@ main_loop (struct fuse_session *se)
   struct fuse_chan *ch = fuse_session_next_chan (se, NULL);
   int fuse_fd = fuse_chan_fd (ch);
   GIOChannel *fuse_channel, *ready_pipe_channel;
+  char *bundle_dir;
 
   mainloop = g_main_loop_new (NULL, TRUE);
 
@@ -2227,7 +2345,8 @@ main_loop (struct fuse_session *se)
   ready_pipe_channel = g_io_channel_unix_new (master_socket_ready_pipe);
   g_io_add_watch (ready_pipe_channel, G_IO_IN, ready_pipe_cb, ready_pipe_channel);
 
-  glick_public_new ("test.bundle");
+  bundle_dir = g_build_filename (g_get_home_dir (), ".bundles", NULL);
+  scan_public_directory (bundle_dir);
 
   g_main_loop_run (mainloop);
 
