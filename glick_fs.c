@@ -573,7 +573,7 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
       GlickMount *mount;
       GlickMountTransientFile *dir;
 
-      names_used = g_hash_table_new (g_direct_hash, g_direct_equal);
+      names_used = g_hash_table_new (g_str_hash, g_str_equal);
 
       dir = get_transient_file_from_inode (ino, &mount);
       if (dir == NULL)
