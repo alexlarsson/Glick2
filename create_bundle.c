@@ -12,15 +12,16 @@ typedef struct _SFile SFile;
 
 struct _SFile {
   char *name;
-  guint32 inode;
-  guint32 name_offset;
   char *full_path;
   char *relative_path;
-  SFile *parent;
   struct stat statbuf;
-  GList *children;
   char *symlink_data;
+  SFile *parent;
+  GList *children;
+
+  guint32 inode;
   guint32 symlink_offset;
+  guint32 name_offset;
 };
 
 SFile *
@@ -75,6 +76,71 @@ slurp_files (const char *full_path, const char *relative_path, const char *name)
     }
 
   return file;
+}
+
+SFile *
+dup_file (SFile *file)
+{
+  SFile *new;
+
+  new = g_new0 (SFile, 1);
+
+  new->name = g_strdup (file->name);
+  new->full_path = g_strdup (file->full_path);
+  new->relative_path = g_strdup (file->relative_path);
+  new->statbuf = file->statbuf;
+
+  return new;
+}
+
+SFile *
+split_files (SFile *orig_file, char **split_paths, gboolean *replace_orig)
+{
+  GList *l, *next, *new_children;
+  SFile *orig_child, *new_child, *new_file;
+  gboolean replace_child;
+  int i;
+
+  for (i = 0; split_paths[i] != NULL; i++)
+    {
+      if (strcmp (split_paths[i], orig_file->relative_path) == 0)
+	{
+	  *replace_orig = TRUE;
+	  return orig_file;
+	}
+    }
+
+  new_children = NULL;
+  l = orig_file->children;
+  while (l != NULL)
+    {
+      orig_child = l->data;
+      next = l->next;
+
+      new_child = split_files (orig_child, split_paths, &replace_child);
+      if (new_child)
+	{
+	  new_children = g_list_append (new_children, new_child);
+	  if (replace_child)
+	    orig_file->children = g_list_remove (orig_file->children, orig_child);
+	}
+
+      l = next;
+    }
+
+  if (new_children == NULL)
+    return NULL;
+
+  new_file = dup_file (orig_file);
+  new_file->children = new_children;
+  for (l = new_children; l != NULL; l = l->next)
+    {
+      new_child = l->data;
+      new_child->parent = new_file;
+    }
+
+  *replace_orig = FALSE;
+  return new_file;
 }
 
 typedef void FileVisitorFunc (SFile *file, void *user_data);
@@ -634,17 +700,19 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
 #define BUNDLE_KEY_ID "Id"
 #define BUNDLE_KEY_VERSION "Version"
 #define BUNDLE_KEY_EXEC "Exec"
+#define BUNDLE_KEY_EXPORT "Export"
 
 int
 main (int argc, char *argv[])
 {
-  SFile *root;
+  SFile *root, *exports_root;
   GFile *f;
   Slice *slice;
   Bundle *bundle;
   GError *error;
   GKeyFile *config;
   char *id, *version, *exec;
+  char **exports;
 
   g_type_init ();
 
@@ -681,8 +749,25 @@ main (int argc, char *argv[])
 
   root = slurp_files (argv[2], "/", "/");
 
+  exports_root = NULL;
+  exports = g_key_file_get_string_list (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_EXPORT, NULL, &error);
+  if (exports != NULL)
+    {
+      gboolean replace;
+      exports_root = split_files (root, exports, &replace);
+      if (replace)
+	root = NULL;
+    }
+
   slice = slice_new (root);
   bundle_add_slice (bundle, slice);
+
+  if (exports_root)
+    {
+      slice = slice_new (exports_root);
+      slice->flags |= GLICK_SLICE_FLAGS_EXPORT;
+      bundle_add_slice (bundle, slice);
+    }
 
   f = g_file_new_for_commandline_arg (argv[3]);
 
