@@ -22,7 +22,7 @@ glick2: glick2.c
 	gcc ${CFLAGS} `pkg-config fuse glib-2.0 --cflags --libs` glick2.c -o glick2 -DBINDIR=\"${BINDIR}\"
 
 glick_fs: glick_fs.c glick.h
-	gcc ${CFLAGS} `pkg-config fuse glib-2.0 gthread-2.0 --cflags --libs` glick_fs.c -o glick_fs
+	gcc ${CFLAGS} `pkg-config fuse glib-2.0 gthread-2.0 gio-2.0 --cflags --libs` glick_fs.c -o glick_fs
 
 create_bundle: create_bundle.c
 	gcc ${CFLAGS} `pkg-config glib-2.0 gio-2.0 --cflags --libs` create_bundle.c -o create_bundle

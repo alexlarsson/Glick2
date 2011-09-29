@@ -14,6 +14,7 @@
 #include <poll.h>
 #include <assert.h>
 #include <glib.h>
+#include <gio/gio.h>
 
 #include "glick.h"
 #include "format.h"
@@ -22,7 +23,6 @@
  * Add support for mtime/ctime/atime
  * Add bloom table for hash lookups
  * Support sha1-based merging
- * Track installed bundles
  * Add installed bundles symlinks
  * Support inotify for exported files
  * Support renames of transient files
@@ -63,6 +63,8 @@
    1xxxxxxxxxxxxxxxyyyyyyyyyyyyyyyy
 
 */
+
+#define BUNDLES_DIR "Apps"
 
 typedef struct {
   int ref_count;
@@ -2451,6 +2453,16 @@ static int set_one_signal_handler(int sig, void (*handler)(int))
   return TRUE;
 }
 
+static void
+bundles_dir_changed (GFileMonitor      *monitor,
+		     GFile             *file,
+		     GFile             *other_file,
+		     GFileMonitorEvent  event_type,
+		     char *bundle_dir)
+{
+  g_print ("bundles_dir_changed: %s\n", bundle_dir);
+  scan_public_directory (bundle_dir);
+}
 
 int
 main_loop (struct fuse_session *se)
@@ -2479,8 +2491,18 @@ main_loop (struct fuse_session *se)
   ready_pipe_channel = g_io_channel_unix_new (master_socket_ready_pipe);
   g_io_add_watch (ready_pipe_channel, G_IO_IN, ready_pipe_cb, ready_pipe_channel);
 
-  bundle_dir = g_build_filename (g_get_home_dir (), ".bundles", NULL);
+  bundle_dir = g_build_filename (g_get_home_dir (), BUNDLES_DIR, NULL);
   scan_public_directory (bundle_dir);
+
+  {
+    g_print ("bundle dir: %s\n", bundle_dir);
+    GFile *f = g_file_new_for_path (bundle_dir);
+    GFileMonitor *monitor =
+      g_file_monitor_directory (f, G_FILE_MONITOR_NONE,
+				NULL, NULL);
+
+    g_signal_connect (monitor, "changed", G_CALLBACK (bundles_dir_changed), bundle_dir);
+  }
 
   g_main_loop_run (mainloop);
 
@@ -2544,6 +2566,7 @@ main (int argc, char *argv[])
   const char *homedir;
 
   g_thread_init (NULL);
+  g_type_init ();
 
   glick_thread_pool = g_thread_pool_new (thread_pool_func, NULL, 20,
 					 FALSE, NULL);
