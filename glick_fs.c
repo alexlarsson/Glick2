@@ -27,10 +27,12 @@
  * Add installed bundles symlinks
  * Track kernel refs to inodes (lookup/forget)
  * Free transient dirs and invalidate inodes when slices are removed
+ * Support inotify for exported files
  * Invalidate entries when slices are added
  * Support renames of transient files
  * Support access()
  * Support triggers
+ * Do file read in threads
  */
 
 /* Inodes:
@@ -835,10 +837,19 @@ glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
   struct stat res_stat;
   int res;
 
-  __debug__ (("glick_fs_setattr\n"));
+  __debug__ (("glick_fs_setattr %x to_set: %x\n", (int)ino, to_set));
 
   if (INODE_IS_SLICE_FILE (ino))
     {
+      if (to_set == FUSE_SET_ATTR_SIZE &&
+	  glick_fs_stat (ino, &res_stat) == 0 &&
+	  res_stat.st_size == attr->st_size)
+	{
+	  __debug__ (("replying with attr\n"));
+	  fuse_reply_attr (req, &res_stat, ATTR_CACHE_TIMEOUT_SEC);
+	  return;
+	}
+
       __debug__ (("replying with EACCESS\n"));
       fuse_reply_err (req, EACCES);
       return;
