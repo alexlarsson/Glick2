@@ -14,8 +14,10 @@
 #include <unistd.h>
 #include <assert.h>
 #include <glib.h>
+#include <sys/mman.h>
 
 #include "glick.h"
+#include "format.h"
 
 static void
 dummy_getattr (fuse_req_t req, fuse_ino_t ino,
@@ -218,6 +220,73 @@ connect_to_socket (const char *path)
   return socket_fd;
 }
 
+char *
+map_and_verify_bundle (int fd, gsize *mapped_size)
+{
+  GlickBundleHeader *header;
+  char *data;
+  struct stat statbuf;
+  guint32 header_size;
+  guint32 num_slices;
+  guint32 slices_offset;
+  guint64 slices_size;
+
+  if (fstat (fd, &statbuf) != 0)
+    return NULL;
+
+  if (sizeof (GlickBundleHeader) >= statbuf.st_size)
+    return NULL;
+
+  data = mmap (NULL, sizeof (GlickBundleHeader), PROT_READ,
+	       MAP_PRIVATE, fd, 0);
+  if (data == NULL)
+    return NULL;
+
+  header = (GlickBundleHeader *)data;
+  header_size = GUINT32_FROM_LE (header->header_size);
+
+  munmap (data, sizeof (GlickBundleHeader));
+
+  /* Ensure that the header fits in the file */
+  if (header_size >= statbuf.st_size)
+    return NULL;
+
+  /* header_size is uint32, so this can't wrap gsize */
+  data = mmap (NULL, header_size, PROT_READ,
+	       MAP_PRIVATE, fd, 0);
+  if (data == NULL)
+    return NULL;
+
+  header = (GlickBundleHeader *)data;
+
+  if (memcmp (header->glick_magic, GLICK_MAGIC, 8) != 0)
+    {
+      munmap (data, header_size);
+      return NULL;
+    }
+
+  if (GUINT32_FROM_LE (header->glick_version) != GLICK_VERSION)
+    {
+      munmap (data, header_size);
+      return NULL;
+    }
+
+  slices_offset = GUINT32_FROM_LE (header->slices_offset);
+  num_slices = GUINT32_FROM_LE (header->num_slices);
+  slices_size = num_slices * sizeof (GlickSliceRef);
+
+  /* Ensure that the slice fits in the file */
+  if (slices_offset >= statbuf.st_size ||
+      slices_size > statbuf.st_size ||
+      slices_offset > statbuf.st_size - slices_size)
+    {
+      munmap (data, header_size);
+      return NULL;
+    }
+
+  *mapped_size = header_size;
+  return data;
+}
 
 int
 main (int argc, char *argv[])
@@ -238,6 +307,10 @@ main (int argc, char *argv[])
   ssize_t nbytes;
   GlickMountRequestMsg msg;
   GlickMountRequestReply reply;
+  GlickBundleHeader *header;
+  char *data;
+  gsize header_size;
+  char *exec, *relative_exec;
 
   if (argc < 2)
     {
@@ -251,6 +324,32 @@ main (int argc, char *argv[])
       fprintf (stderr, "Unable to open %s\n", argv[1]);
       return 1;
     }
+
+  data = map_and_verify_bundle (exe_fd, &header_size);
+  if (data == NULL)
+    {
+      fprintf (stderr, "Invalid bundle format in file %s\n", argv[1]);
+      return 1;
+    }
+
+  header = (GlickBundleHeader *)data;
+
+  exec = "/bin/sh";
+  if (header->exec_offset != 0)
+    {
+      relative_exec =
+	g_strndup (data + GUINT32_FROM_LE (header->exec_offset),
+		   GUINT32_FROM_LE (header->exec_size));
+      if (*relative_exec == '/')
+	exec = relative_exec;
+      else
+	{
+	  exec = g_build_filename ("/opt/glick", relative_exec, NULL);
+	  g_free (relative_exec);
+	}
+    }
+
+  munmap (data, header_size);
 
   homedir = g_get_home_dir ();
   glick_mount = g_build_filename (homedir, ".glick", NULL);
@@ -321,7 +420,7 @@ main (int argc, char *argv[])
   i = 0;
   child_argv[i++] = BINDIR "/private-mount";
   child_argv[i++] = glick_subdir;
-  child_argv[i++] = "/bin/sh"; /* TODO: should be the fs-internal binary to run */
+  child_argv[i++] = exec;
   /* Make it write to internal_mount_done_pipe when internals mounts are set up to wake the fuse
      child */
   child_argv[i++] = "-extra";
