@@ -2273,6 +2273,9 @@ scan_public_directory (const char *path)
     {
       while ((child_name = g_dir_read_name (dir)) != NULL)
 	{
+	  if (*child_name == '.')
+	    continue;
+
 	  child_path = g_build_filename (path, child_name, NULL);
 
 	  if (stat (child_path, &statbuf) == 0 &&
