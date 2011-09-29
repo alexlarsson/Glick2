@@ -177,6 +177,7 @@ struct _GlickThreadOp {
 #define ENTRY_CACHE_TIMEOUT_SEC 10000
 #define ATTR_CACHE_TIMEOUT_SEC 10000
 
+static char *glick_mountpoint = NULL;
 static GThreadPool*glick_thread_pool = NULL;
 static struct fuse_session *glick_fuse_session = NULL;
 static GHashTable *glick_mounts_by_id; /* id -> GlickMount */
@@ -2561,7 +2562,6 @@ main (int argc, char *argv[])
 {
   struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
   struct fuse_chan *ch;
-  char *mountpoint;
   int err = -1;
   const char *homedir;
 
@@ -2576,10 +2576,10 @@ main (int argc, char *argv[])
   glick_slices_by_id = g_hash_table_new (g_direct_hash, g_direct_equal);
 
   homedir = g_get_home_dir ();
-  mountpoint = g_build_filename (homedir, ".glick", NULL);
-  mkdir (mountpoint, 0700);
+  glick_mountpoint = g_build_filename (homedir, ".glick", NULL);
+  mkdir (glick_mountpoint, 0700);
 
-  if ((ch = fuse_mount (mountpoint, NULL)) != NULL)
+  if ((ch = fuse_mount (glick_mountpoint, NULL)) != NULL)
     {
       struct fuse_session *se;
 
@@ -2606,7 +2606,7 @@ main (int argc, char *argv[])
 
 	    close (sync_pipe[0]);
 
-	    socket_path = g_build_filename (mountpoint, SOCKET_NAME, NULL);
+	    socket_path = g_build_filename (glick_mountpoint, SOCKET_NAME, NULL);
 
 	    local.sun_family = AF_UNIX;
 	    strcpy (local.sun_path, socket_path);
@@ -2632,7 +2632,7 @@ main (int argc, char *argv[])
 
 	  fuse_session_destroy (se);
 	}
-      fuse_unmount (mountpoint, ch);
+      fuse_unmount (glick_mountpoint, ch);
     }
   fuse_opt_free_args (&args);
 
