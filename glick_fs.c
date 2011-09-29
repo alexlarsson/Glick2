@@ -219,6 +219,7 @@ void glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice);
 void glick_thread_push (GlickThreadOp *op,
 			GlickThreadOpFunc thread_func,
 			GlickThreadOpFunc result_func);
+GlickSliceInode *glick_slice_get_inode (GlickSlice *slice, int local);
 
 #if 1
 #define __debug__(x) g_print x
@@ -359,10 +360,10 @@ glick_fs_stat (fuse_ino_t ino, struct stat *stbuf)
 
       local = SLICE_FILE_INODE_GET_LOCAL (ino);
 
-      if (local >= slice->num_inodes)
+      inode = glick_slice_get_inode (slice, local);
+      if (inode == NULL)
 	return -1;
 
-      inode = &slice->inodes[local];
       stbuf->st_nlink = 1;
       stbuf->st_mode = GUINT32_FROM_LE (inode->mode);
       stbuf->st_size = GUINT64_FROM_LE (inode->size);
@@ -727,6 +728,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
   int id, local;
   GlickMountTransientFile *file;
   GlickOpenFile *open;
+  GlickSliceInode *inodep;
 
   fi->keep_cache = 1;
   fi->fh = 0;
@@ -769,11 +771,9 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	}
 
       local = SLICE_FILE_INODE_GET_LOCAL (ino);
-      if (local < slice->num_inodes)
+      inodep = glick_slice_get_inode (slice, local);
+      if (inodep != NULL)
 	{
-	  GlickSliceInode *inodep;
-
-	  inodep = &slice->inodes[local];
 	  if (S_ISREG (GUINT32_FROM_LE (inodep->mode)))
 	    {
 	      open = g_new0 (GlickOpenFile, 1);
@@ -1077,6 +1077,7 @@ glick_fs_readlink (fuse_req_t req, fuse_ino_t ino)
   GlickSlice *slice;
   int id, local;
   GlickMountTransientFile *file;
+  GlickSliceInode *inodep;
 
   __debug__ (("glick_fs_readlink %x\n", (int)ino));
 
@@ -1112,11 +1113,9 @@ glick_fs_readlink (fuse_req_t req, fuse_ino_t ino)
 	}
 
       local = SLICE_FILE_INODE_GET_LOCAL (ino);
-      if (local < slice->num_inodes)
+      inodep = glick_slice_get_inode (slice, local);
+      if (inodep != NULL)
 	{
-	  GlickSliceInode *inodep;
-
-	  inodep = &slice->inodes[local];
 	  if (S_ISLNK (GUINT32_FROM_LE (inodep->mode)))
 	    {
 	      const char *lnk = glick_slice_lookup_string (slice, GUINT64_FROM_LE (inodep->offset));
@@ -1600,6 +1599,14 @@ glick_slice_lookup_path (GlickSlice *slice, const char *path, guint32 path_hash,
     step++;
   }
 
+  return NULL;
+}
+
+GlickSliceInode *
+glick_slice_get_inode (GlickSlice *slice, int local)
+{
+  if (local < slice->num_inodes)
+    return &slice->inodes[local];
   return NULL;
 }
 
