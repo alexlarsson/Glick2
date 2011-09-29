@@ -28,7 +28,7 @@
  * Support renames of transient files
  * Support access()
  * Support triggers
- * Do file read in threads
+ * Do file writes in threads
  */
 
 /* Inodes:
@@ -141,6 +141,14 @@ typedef struct {
   int flags;
 } GlickOpenFile;
 
+typedef struct _GlickThreadOp GlickThreadOp;
+typedef void (*GlickThreadOpFunc)(GlickThreadOp *op);
+
+struct _GlickThreadOp {
+  GlickThreadOpFunc thread_func;
+  GlickThreadOpFunc result_func;
+};
+
 #define ROOT_INODE 1
 #define SOCKET_INODE 2
 #define SOCKET_NAME "socket"
@@ -167,6 +175,7 @@ typedef struct {
 #define ENTRY_CACHE_TIMEOUT_SEC 10000
 #define ATTR_CACHE_TIMEOUT_SEC 10000
 
+static GThreadPool*glick_thread_pool = NULL;
 static struct fuse_session *glick_fuse_session = NULL;
 static GHashTable *glick_mounts_by_id; /* id -> GlickMount */
 static GHashTable *glick_mounts_by_name; /* name -> GlickMount */
@@ -203,6 +212,9 @@ static gboolean mount_ref_data_cb (GIOChannel   *source,
 void glick_public_apply_to_mount (GlickPublic *public, GlickMount *mount);
 void glick_public_unapply_to_mount (GlickPublic *public, GlickMount *mount);
 void glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice);
+void glick_thread_push (GlickThreadOp *op,
+			GlickThreadOpFunc thread_func,
+			GlickThreadOpFunc result_func);
 
 #if 1
 #define __debug__(x) g_print x
@@ -789,19 +801,50 @@ glick_fs_release (fuse_req_t req, fuse_ino_t ino,
   fuse_reply_err (req, 0);
 }
 
+typedef struct {
+  GlickThreadOp base;
+  fuse_req_t req;
+  GlickOpenFile *open;
+  gssize res;
+  guint64 start;
+  guint64 size;
+  char *buf;
+  int errsv;
+} GlickThreadOpRead;
+
+static void
+read_op_reply (GlickThreadOp *op)
+{
+  GlickThreadOpRead *read = (GlickThreadOpRead *)op;
+
+  if (read->res >= 0)
+    fuse_reply_buf (read->req, read->buf, read->res);
+  else
+    fuse_reply_err (read->req, read->errsv);
+
+  free (read->buf);
+}
+
+static void
+read_op_thread (GlickThreadOp *op)
+{
+  GlickThreadOpRead *read = (GlickThreadOpRead *)op;
+
+  read->res = pread (read->open->fd, read->buf, read->size, read->start);
+  read->errsv = errno;
+}
+
 static void
 glick_fs_read (fuse_req_t req, fuse_ino_t ino, gsize size,
 	       off_t off, struct fuse_file_info *fi)
 {
-  char *buf;
-  gssize res;
   GlickOpenFile *open;
   guint64 start, end;
+  GlickThreadOpRead *op;
 
   __debug__ (("glick_fs_read\n"));
 
   open = (GlickOpenFile *)fi->fh;
-
   if (open->flags & O_WRONLY)
     {
       fuse_reply_err (req, EBADF);
@@ -809,7 +852,6 @@ glick_fs_read (fuse_req_t req, fuse_ino_t ino, gsize size,
     }
 
   start = open->start + off;
-
   if (open->end != -1)
     {
       end = start + size;
@@ -818,13 +860,16 @@ glick_fs_read (fuse_req_t req, fuse_ino_t ino, gsize size,
       size = end - start;
     }
 
-  buf = malloc (size);
-  res = pread (open->fd, buf, size, start);
-  if (res >= 0)
-    fuse_reply_buf (req, buf, res);
-  else
-    fuse_reply_err (req, errno);
-  free (buf);
+  op = g_new0 (GlickThreadOpRead, 1);
+  op->req = req;
+  op->open = open;
+  op->buf = malloc (size);
+  op->size = size;
+  op->start = start;
+
+  glick_thread_push ((GlickThreadOp *)op,
+		     read_op_thread,
+		     read_op_reply);
 }
 
 static void
@@ -2442,6 +2487,51 @@ main_loop (struct fuse_session *se)
   return res < 0 ? -1 : 0;
 }
 
+void
+glick_thread_push (GlickThreadOp *op,
+		   GlickThreadOpFunc thread_func,
+		   GlickThreadOpFunc result_func)
+{
+  op->thread_func = thread_func;
+  op->result_func = result_func;
+  g_thread_pool_push (glick_thread_pool,
+		      op, NULL);
+}
+
+static gboolean
+mainloop_proxy_func (gpointer user_data)
+{
+  GlickThreadOp *op = user_data;
+
+  op->result_func (op);
+
+  g_free (op);
+
+  return FALSE;
+}
+
+static void
+thread_pool_func (gpointer data,
+		  gpointer user_data)
+{
+  GlickThreadOp *op = data;
+  GSource *source;
+
+  op->thread_func (op);
+
+  if (op->result_func)
+    {
+      source = g_idle_source_new ();
+      g_source_set_priority (source, G_PRIORITY_DEFAULT);
+      g_source_set_callback (source, mainloop_proxy_func, op,
+			     NULL);
+      g_source_attach (source, NULL);
+      g_source_unref (source);
+    }
+  else
+    g_free (op);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -2450,6 +2540,11 @@ main (int argc, char *argv[])
   char *mountpoint;
   int err = -1;
   const char *homedir;
+
+  g_thread_init (NULL);
+
+  glick_thread_pool = g_thread_pool_new (thread_pool_func, NULL, 20,
+					 FALSE, NULL);
 
   glick_mounts_by_id = g_hash_table_new (g_direct_hash, g_direct_equal);
   glick_mounts_by_name = g_hash_table_new (g_str_hash, g_str_equal);
