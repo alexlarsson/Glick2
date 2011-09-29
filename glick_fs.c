@@ -220,10 +220,10 @@ GlickSliceInode * glick_mount_lookup_path (GlickMount *mount, const char *path, 
 GlickMountTransientFile *glick_mount_transient_file_new (GlickMount *mount, GlickMountTransientFile *parent, const char *path, gboolean owned);
 GlickMountTransientFile *glick_mount_transient_file_new_dir (GlickMount *mount, GlickMountTransientFile *parent, char *path, gboolean owned);
 GlickMountTransientFile *glick_mount_transient_file_new_file (GlickMount *mount, GlickMountTransientFile *parent, char *path);
+void glick_mount_transient_file_free (GlickMountTransientFile *file);
 void glick_mount_transient_file_stat (GlickMountTransientFile *file, struct stat *statbuf);
 void glick_mount_transient_file_unown (GlickMountTransientFile *file);
 void glick_mount_transient_file_own (GlickMountTransientFile *file);
-void glick_mount_transient_file_unlink (GlickMountTransientFile *file);
 void glick_mount_add_slice (GlickMount *mount, GlickSlice *slice);
 static gboolean mount_ref_data_cb (GIOChannel   *source,
 				   GIOCondition  condition,
@@ -1294,7 +1294,7 @@ glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
   /* Should be safe to free here, as kernel will drop the cache for this file
      due to the rmdir operation, and it should have no children due to above
      NOTEMPTY checks */
-  glick_mount_transient_file_unlink (file);
+  glick_mount_transient_file_free (file);
   fuse_reply_err (req, 0);
 }
 
@@ -1415,7 +1415,7 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
       return;
     }
 
-  glick_mount_transient_file_unlink (file);
+  glick_mount_transient_file_free (file);
   fuse_reply_err (req, 0);
 }
 
@@ -1817,14 +1817,6 @@ glick_mount_transient_file_stat (GlickMountTransientFile *file, struct stat *sta
 }
 
 void
-glick_mount_transient_file_unlink (GlickMountTransientFile *file)
-{
-  /* This will cause the file to be destroyed */
-  g_hash_table_remove (file->mount->inode_to_file,
-		       GUINT_TO_POINTER (file->inode));
-}
-
-void
 glick_mount_transient_file_free (GlickMountTransientFile *file)
 {
   glick_mount_transient_file_unown (file);
@@ -1839,6 +1831,8 @@ glick_mount_transient_file_free (GlickMountTransientFile *file)
 
   g_free (file->data);
 
+  g_hash_table_remove (file->mount->inode_to_file,
+		       GUINT_TO_POINTER (file->inode));
   g_hash_table_remove (file->mount->path_to_file, file->path);
   g_free (file->path);
   g_free (file);
@@ -1933,7 +1927,7 @@ glick_mount_new (const char *name)
   else
     mount->name = g_strdup_printf ("%d", (int)mount->id);
 
-  mount->inode_to_file = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)glick_mount_transient_file_free);
+  mount->inode_to_file = g_hash_table_new (g_direct_hash, g_direct_equal);
   mount->path_to_file = g_hash_table_new (g_str_hash, g_str_equal);
   mount->next_mount_file_inode = 0;
 
@@ -2254,7 +2248,7 @@ remove_slice_remove_file (GlickMount *mount,
       if (inode == NULL)
 	{
 	  /* Free file if no more slices references it */
-	  glick_mount_transient_file_unlink (file);
+	  glick_mount_transient_file_free (file);
 	}
     }
 }
