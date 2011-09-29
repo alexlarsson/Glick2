@@ -23,7 +23,6 @@
  * Add support for mtime/ctime/atime
  * Add bloom table for hash lookups
  * Support sha1-based merging
- * Add installed bundles symlinks
  * Support inotify for removed exported files
  * Support renames of transient files
  * Support access()
@@ -43,8 +42,16 @@
    Socket:
    00000000000000000000000000000010
 
-   Toplevel Directory:
-		   +- 16bit glick mount id (>=3)
+   Bundle dir:
+   00000000000000000000000000000011
+
+   Bundle file:
+    +- 15bit link id  (!= 0)
+    v
+   0xxxxxxxxxxxxxxx00000000000000011
+
+  Toplevel Directory:
+		   +- 16bit glick mount id (>=4)
 		   v
    0000000000000000yyyyyyyyyyyyyyyy
 
@@ -110,7 +117,9 @@ typedef struct {
 typedef struct {
   char *filename;
   time_t mtime;
+  char *bundle_id;
   GList *slices;
+  guint32 id;
 } GlickPublic;
 
 typedef struct GlickMountTransientFile GlickMountTransientFile;
@@ -154,6 +163,7 @@ struct _GlickThreadOp {
 
 #define ROOT_INODE 1
 #define SOCKET_INODE 2
+#define BUNDLES_INODE 3
 #define SOCKET_NAME "socket"
 
 #define SLICE_FILE_INODE_MASK 0x80000000
@@ -165,6 +175,10 @@ struct _GlickThreadOp {
 #define TRANSIENT_FILE_INODE_GET_TRANSIENT(x) (((x) & TRANSIENT_FILE_INODE_TRANSIENT_MASK) >> TRANSIENT_FILE_INODE_TRANSIENT_SHIFT)
 #define TRANSIENT_FILE_INODE(id, file) ((id) | ((file) << TRANSIENT_FILE_INODE_TRANSIENT_SHIFT))
 #define TRANSIENT_FILE_INODE_FROM_MOUNT(id) TRANSIENT_FILE_INODE((id), 0)
+/* This assumes inode is not a slice file */
+#define INODE_IS_BUNDLE_FILE(ino) (((ino) & TRANSIENT_FILE_INODE_MOUNT_MASK) == 3)
+#define BUNDLE_FILE_INODE_GET_LOCAL(ino) TRANSIENT_FILE_INODE_GET_TRANSIENT(ino)
+#define BUNDLE_FILE_INODE_FROM_LOCAL(id) TRANSIENT_FILE_INODE(3, (id))
 #define SLICE_FILE_INODE_SLICE_SHIFT 16
 #define SLICE_FILE_INODE_LOCAL_MASK 0x0000FFFF
 #define SLICE_FILE_INODE_SLICE_MASK 0x7FFF0000
@@ -187,11 +201,12 @@ static GlickMount *public_mount = NULL;
 static GList *glick_mounts = NULL; /* list of GlickMount */
 static GList *glick_mount_refs = NULL; /* list of GlickMountRefs */
 static GList *glick_publics = NULL; /* list of GlickPublic */
-static int next_glick_mount_id = 3;
+static int next_glick_mount_id = 4;
 
 static GList *glick_slices = NULL; /* list of GlickSlice */
 static GHashTable *glick_slices_by_id; /* id -> GlickSlice */
 static guint32 next_glick_slice_id = 1;
+static guint32 next_glick_public_id = 1;
 static unsigned long fuse_generation = 1;
 
 static int master_socket_ready_pipe = 0;
@@ -213,6 +228,8 @@ void glick_mount_add_slice (GlickMount *mount, GlickSlice *slice);
 static gboolean mount_ref_data_cb (GIOChannel   *source,
 				   GIOCondition  condition,
 				   gpointer      data);
+GlickPublic *glick_public_lookup_by_id (guint32 id);
+GlickPublic *glick_public_lookup_by_bundle (const char *bundle_id);
 void glick_public_apply_to_mount (GlickPublic *public, GlickMount *mount);
 void glick_public_unapply_to_mount (GlickPublic *public, GlickMount *mount);
 void glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice);
@@ -332,6 +349,7 @@ glick_fs_stat (fuse_ino_t ino, struct stat *stbuf)
 	  return -1;
 
 	case ROOT_INODE:
+	case BUNDLES_INODE:
 	  stbuf->st_mode = S_IFDIR | 0755;
 	  stbuf->st_nlink = 2;
 	  break;
@@ -343,8 +361,17 @@ glick_fs_stat (fuse_ino_t ino, struct stat *stbuf)
 	  break;
 
 	default:
-	  file = get_transient_file_from_inode (ino, NULL);
-	  glick_mount_transient_file_stat (file, stbuf);
+	  if (INODE_IS_BUNDLE_FILE (ino))
+	    {
+	      stbuf->st_mode = S_IFLNK | 0755;
+	      stbuf->st_nlink = 1;
+	      stbuf->st_size = 0;
+	    }
+	  else
+	    {
+	      file = get_transient_file_from_inode (ino, NULL);
+	      glick_mount_transient_file_stat (file, stbuf);
+	    }
 	}
     }
   else
@@ -440,6 +467,26 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 	  return;
 	}
     }
+  else if (parent == BUNDLES_INODE)
+    {
+      GlickPublic *public = glick_public_lookup_by_bundle (name);
+
+      if (public != NULL)
+	{
+	  /* Don't cache bundle links, as we don't invalidate them
+	     correctly */
+	  e.attr_timeout = 0;
+	  e.entry_timeout = 0;
+
+	  e.ino = BUNDLE_FILE_INODE_FROM_LOCAL (public->id);
+	  e.attr.st_mode = S_IFLNK | 0755;
+	  e.attr.st_nlink = 1;
+	  e.attr.st_size = 0;
+	  __debug__ (("replying with bundle link\n"));
+	  fuse_reply_entry (req, &e);
+	  return;
+	}
+    }
   else
     {
       mount_id = TRANSIENT_FILE_INODE_GET_MOUNT(parent);
@@ -463,6 +510,18 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 		  __debug__ (("replying with NOTDIR\n"));
 		  fuse_reply_err (req, ENOTDIR);
 		  return;
+		}
+
+	      if (parent_file->inode == 0 &&
+		  strcmp (name, ".bundles") == 0)
+		{
+		      e.ino = BUNDLES_INODE;
+		      e.attr.st_mode = S_IFDIR | 0755;
+		      e.attr.st_nlink = 2;
+		      e.attr.st_size = 0;
+		      __debug__ (("replying with bundles inode\n"));
+		      fuse_reply_entry (req, &e);
+		      return;
 		}
 
 	      path = g_build_filename (parent_file->path, name, NULL);
@@ -530,7 +589,9 @@ glick_fs_forget (fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
 
   if (!INODE_IS_SLICE_FILE (ino) &&
       ino != SOCKET_INODE &&
-      ino != ROOT_INODE)
+      ino != ROOT_INODE &&
+      ino != BUNDLES_INODE &&
+      !INODE_IS_BUNDLE_FILE(ino))
     {
       file = get_transient_file_from_inode (ino, NULL);
       file->kernel_refs -= nlookup;
@@ -622,6 +683,17 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 		      TRANSIENT_FILE_INODE_FROM_MOUNT(mount->id));
 	}
     }
+  else if (ino == BUNDLES_INODE)
+    {
+      dirbuf_add (req, b, "..", ROOT_INODE);
+      for (l = glick_publics; l != NULL; l = l->next)
+	{
+	  GlickPublic *public = l->data;
+
+	  dirbuf_add (req, b, public->bundle_id,
+		      BUNDLE_FILE_INODE_FROM_LOCAL (public->id));
+	}
+    }
   else
     {
       guint32 dir_path_hash;
@@ -646,6 +718,9 @@ glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
 
       // TODO: Wrong...
       dirbuf_add (req, b, "..", ROOT_INODE);
+
+      if (dir->inode == 0)
+	dirbuf_add (req, b, ".bundles", BUNDLES_INODE);
 
       for (l = mount->slices; l != NULL; l = l->next)
 	{
@@ -981,7 +1056,7 @@ find_parent_dir_for_path_op (fuse_req_t req, fuse_ino_t parent, GlickMount **mou
     }
 
   /* Can't modify files in the root dir, only in mount dirs */
-  if (parent == ROOT_INODE)
+  if (parent == ROOT_INODE || parent == BUNDLES_INODE)
     {
       fuse_reply_err (req, EACCES);
       return NULL;
@@ -1083,6 +1158,18 @@ glick_fs_readlink (fuse_req_t req, fuse_ino_t ino)
 
   if (!INODE_IS_SLICE_FILE (ino))
     {
+      if (INODE_IS_BUNDLE_FILE (ino))
+	{
+	  guint32 id = BUNDLE_FILE_INODE_GET_LOCAL(ino);
+	  GlickPublic *public = glick_public_lookup_by_id (id);
+
+	  if (public == NULL)
+	    fuse_reply_err (req, EACCES);
+	  else
+	    fuse_reply_readlink (req, public->filename);
+	  return;
+	}
+
       id = TRANSIENT_FILE_INODE_GET_MOUNT (ino);
 
       file = get_transient_file_from_inode (ino, NULL);
@@ -2269,6 +2356,35 @@ glick_public_unapply_to_mount (GlickPublic *public, GlickMount *mount)
     }
 }
 
+GlickPublic *
+glick_public_lookup_by_bundle (const char *bundle_id)
+{
+  GList *l;
+
+  for (l = glick_publics; l != NULL; l = l->next)
+    {
+      GlickPublic *public = l->data;
+      if (strcmp (public->bundle_id, bundle_id) == 0)
+	return public;
+    }
+
+  return NULL;
+}
+
+GlickPublic *
+glick_public_lookup_by_id (guint32 id)
+{
+  GList *l;
+
+  for (l = glick_publics; l != NULL; l = l->next)
+    {
+      GlickPublic *public = l->data;
+      if (public->id == id)
+	return public;
+    }
+
+  return NULL;
+}
 
 GlickPublic *
 glick_public_new (char *filename)
@@ -2295,10 +2411,15 @@ glick_public_new (char *filename)
     return NULL;
 
   public = g_new0 (GlickPublic, 1);
+  public->id = next_glick_public_id++;
   public->filename = g_strdup (filename);
   public->mtime = statbuf.st_mtime;
 
   header = (GlickBundleHeader *)data;
+
+  /* TODO: Verify offsets */
+  public->bundle_id = g_strndup (data + GUINT32_FROM_LE (header->bundle_id_offset),
+				 GUINT32_FROM_LE (header->bundle_id_size));
 
   slices_offset = GUINT32_FROM_LE (header->slices_offset);
   num_slices = GUINT32_FROM_LE (header->num_slices);
@@ -2354,6 +2475,7 @@ glick_public_free (GlickPublic *public)
   g_list_free (public->slices);
 
   g_free (public->filename);
+  g_free (public->bundle_id);
   g_free (public);
 }
 
