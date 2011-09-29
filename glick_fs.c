@@ -2218,6 +2218,8 @@ glick_public_free (GlickPublic *public)
 {
   GList *l;
 
+  glick_publics = g_list_remove (glick_publics, public);
+
   for (l = glick_mounts; l != NULL; l = l->next)
     {
       GlickMount *mount = l->data;
