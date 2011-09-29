@@ -2461,8 +2461,12 @@ bundles_dir_changed (GFileMonitor      *monitor,
 		     GFileMonitorEvent  event_type,
 		     char *bundle_dir)
 {
-  g_print ("bundles_dir_changed: %s\n", bundle_dir);
-  scan_public_directory (bundle_dir);
+  if (event_type == G_FILE_MONITOR_EVENT_CREATED ||
+      event_type == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT ||
+      event_type == G_FILE_MONITOR_EVENT_DELETED)
+    {
+      scan_public_directory (bundle_dir);
+    }
 }
 
 int
@@ -2496,7 +2500,6 @@ main_loop (struct fuse_session *se)
   scan_public_directory (bundle_dir);
 
   {
-    g_print ("bundle dir: %s\n", bundle_dir);
     GFile *f = g_file_new_for_path (bundle_dir);
     GFileMonitor *monitor =
       g_file_monitor_directory (f, G_FILE_MONITOR_NONE,
