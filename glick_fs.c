@@ -28,6 +28,9 @@
  * Support access()
  * Support triggers
  * Do file writes in threads
+ * Clean up non-slice file handling, use transient files for
+ *      all inodes with a single hash table mapping id to details
+ *      even for toplevel dirs, socket etc
  */
 
 /* Inodes:
@@ -110,6 +113,8 @@ typedef struct {
   GHashTable *inode_to_file;
   GHashTable *path_to_file;
   int next_mount_file_inode;
+
+  GHashTable *hidden_inodes;
 
   GList *slices;
 } GlickMount;
@@ -530,6 +535,13 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 		{
 		  guint32 mode = GUINT32_FROM_LE (inode->mode);
 
+		  if (g_hash_table_lookup (mount->hidden_inodes,
+					   GUINT_TO_POINTER (SLICE_FILE_INODE(slice->id, inode_num))))
+		    {
+		      fuse_reply_err (req, ENOENT);
+		      return;
+		    }
+
 		  if (S_ISDIR (mode))
 		    {
 		      file = g_hash_table_lookup (mount->path_to_file, path);
@@ -586,6 +598,8 @@ static void
 glick_fs_forget (fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
 {
   GlickMountTransientFile *file;
+
+  __debug__(("glick_fs_forget %x %ld", (int)ino, nlookup));
 
   if (!INODE_IS_SLICE_FILE (ino) &&
       ino != SOCKET_INODE &&
@@ -1340,11 +1354,33 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
       GlickMount *mount;
       GlickMountTransientFile *dir, *file;
       char *path;
-
+      GlickSlice *slice;
+      guint32 inode_num;
+      GlickSliceInode *inode;
 
       dir = find_parent_dir_for_path_op (req, parent, &mount);
       if (dir == NULL)
 	return;
+
+      /* Allow creation of hidden inodes, this lets us get inotify events... */
+      path = g_build_filename (dir->path, name, NULL);
+      inode = glick_mount_lookup_path (mount, path, &slice, &inode_num);
+      g_free (path);
+      if (inode != NULL &&
+	  S_ISREG (GUINT32_FROM_LE (inode->mode)) &&
+	  g_hash_table_lookup (mount->hidden_inodes,
+			       GUINT_TO_POINTER (SLICE_FILE_INODE(slice->id, inode_num))))
+	{
+	  g_hash_table_remove (mount->hidden_inodes,
+			       GUINT_TO_POINTER (SLICE_FILE_INODE(slice->id, inode_num)));
+	  e.ino = SLICE_FILE_INODE(slice->id, inode_num);
+	  e.attr.st_mode = GUINT32_FROM_LE (inode->mode);
+	  e.attr.st_ino = e.ino;
+	  e.attr.st_nlink = 1;
+	  e.attr.st_size = GUINT64_FROM_LE (inode->size);
+	  fuse_reply_entry (req, &e);
+	  return;
+	}
 
       path = ensure_no_entry_for_child_op (req, mount, dir, name);
       if (path == NULL)
@@ -1892,6 +1928,7 @@ glick_mount_unref (GlickMount *mount)
 
       g_hash_table_destroy (mount->inode_to_file);
       g_hash_table_destroy (mount->path_to_file);
+      g_hash_table_destroy (mount->hidden_inodes);
 
       glick_mounts = g_list_remove (glick_mounts, mount);
       g_hash_table_remove (glick_mounts_by_id, GINT_TO_POINTER (mount->id));
@@ -1930,6 +1967,8 @@ glick_mount_new (const char *name)
   mount->inode_to_file = g_hash_table_new (g_direct_hash, g_direct_equal);
   mount->path_to_file = g_hash_table_new (g_str_hash, g_str_equal);
   mount->next_mount_file_inode = 0;
+
+  mount->hidden_inodes = g_hash_table_new (g_direct_hash, g_direct_equal);
 
   glick_mounts = g_list_prepend (glick_mounts, mount);
   g_hash_table_insert (glick_mounts_by_id, GINT_TO_POINTER (mount->id), mount);
@@ -2089,7 +2128,7 @@ glick_mount_new_for_bundle (int fd)
 
 typedef struct {
   char *path;
-  guint64 size;
+  fuse_ino_t hidden_inode;
 } AddedFile;
 
 typedef struct {
@@ -2124,18 +2163,26 @@ collect_inotify_paths_cb (gpointer key,
 	  dirent = MIN (dirent, slice->num_dirs);
 	  last_dirent = MIN (last_dirent, slice->num_dirs);
 
-	  data->added_files = g_new0 (AddedFile, last_dirent - dirent);
+	  data->added_files = g_renew (AddedFile, data->added_files,
+				       data->num_added_files + last_dirent - dirent);
 	  for (i = dirent; i < last_dirent; i++)
 	    {
 	      guint16 entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
 	      if (entry_inode < slice->num_inodes)
 		{
-		  const char *name = glick_slice_lookup_string (slice,
-								GUINT32_FROM_LE (slice->inodes[entry_inode].name));
+		  const char *name =
+		    glick_slice_lookup_string (slice,
+					       GUINT32_FROM_LE (slice->inodes[entry_inode].name));
+
 		  if (name != NULL)
 		    {
-		      data->added_files[data->num_added_files].path = g_build_filename (glick_mountpoint, data->mount->name, file->path, name, NULL);
-		      data->added_files[data->num_added_files].size = GUINT64_FROM_LE (slice->inodes[entry_inode].size);
+		      fuse_ino_t hide_inode;
+		      data->added_files[data->num_added_files].path =
+			g_build_filename (glick_mountpoint, data->mount->name, file->path, name, NULL);
+		      hide_inode = SLICE_FILE_INODE(slice->id, entry_inode);
+		      data->added_files[data->num_added_files].hidden_inode = hide_inode;
+		      g_hash_table_insert (data->mount->hidden_inodes,
+					   GUINT_TO_POINTER (hide_inode), GUINT_TO_POINTER(TRUE));
 		      data->num_added_files++;
 		    }
 		}
@@ -2148,7 +2195,27 @@ typedef struct {
   GlickThreadOp base;
   AddedFile *added_files;
   int num_added_files;
+  GlickMount *mount;
 } GlickThreadOpChanges;
+
+static void
+changes_op_result (GlickThreadOp *op)
+{
+  GlickThreadOpChanges *changes = (GlickThreadOpChanges *)op;
+  int i;
+
+  for (i = 0; i < changes->num_added_files; i++)
+    {
+      AddedFile *added_file = &changes->added_files[i];
+      g_free (added_file->path);
+      g_hash_table_remove (changes->mount->hidden_inodes,
+			   GUINT_TO_POINTER (added_file->hidden_inode));
+    }
+
+  g_free (changes->added_files);
+  glick_mount_unref (changes->mount);
+}
+
 
 static void
 changes_op_thread (GlickThreadOp *op)
@@ -2159,11 +2226,8 @@ changes_op_thread (GlickThreadOp *op)
   for (i = 0; i < changes->num_added_files; i++)
     {
       AddedFile *added_file = &changes->added_files[i];
-      truncate (added_file->path, added_file->size);
-      g_free (added_file->path);
+      mknod (added_file->path, S_IFREG | 0755, 0);
     }
-
-  g_free (changes->added_files);
 }
 
 void
@@ -2178,6 +2242,7 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
     {
       data.added_slice = slice;
       data.added_files = NULL;
+      data.num_added_files = 0;
       data.mount = mount;
       g_hash_table_foreach (mount->inode_to_file,
 			    collect_inotify_paths_cb,
@@ -2190,9 +2255,11 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
 	  op = g_new0 (GlickThreadOpChanges, 1);
 	  op->added_files = data.added_files;
 	  op->num_added_files = data.num_added_files;
+	  op->mount = glick_mount_ref (mount);
 
 	  glick_thread_push ((GlickThreadOp *)op,
-			     changes_op_thread, NULL);
+			     changes_op_thread,
+			     changes_op_result);
 	}
     }
 }
@@ -2233,8 +2300,9 @@ remove_slice_remove_file (GlickMount *mount,
 	      guint16 entry_inode = GUINT16_FROM_LE (removed_slice->dirs[i].inode);
 	      if (entry_inode < removed_slice->num_inodes)
 		{
-		  const char *name = glick_slice_lookup_string (removed_slice,
-								GUINT32_FROM_LE (removed_slice->inodes[entry_inode].name));
+		  const char *name =
+		    glick_slice_lookup_string (removed_slice,
+					       GUINT32_FROM_LE (removed_slice->inodes[entry_inode].name));
 		  if (name != NULL)
 		    fuse_lowlevel_notify_inval_entry (ch, fuse_inode, name, strlen (name));
 		}
