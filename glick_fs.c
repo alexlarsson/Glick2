@@ -594,7 +594,8 @@ glick_fs_forget (fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
       !INODE_IS_BUNDLE_FILE(ino))
     {
       file = get_transient_file_from_inode (ino, NULL);
-      file->kernel_refs -= nlookup;
+      if (file)
+	file->kernel_refs -= nlookup;
     }
 
   fuse_reply_none (req);
@@ -2202,24 +2203,22 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
     }
 }
 
-struct RemoveData {
-  GlickMount *mount;
-  GlickSlice *removed_slice;
-};
-
-static gboolean
-remove_slice_cb (gpointer key,
-		 gpointer value,
-		 gpointer user_data)
+static void
+remove_slice_remove_file (GlickMount *mount,
+			  GlickMountTransientFile *file,
+			  GlickSlice *removed_slice)
 {
-  struct RemoveData *data = user_data;
-  GlickMountTransientFile *file = value;
-  GlickMount *mount = data->mount;
-  GlickSlice *removed_slice = data->removed_slice;
   GlickSliceInode *inode;
   guint32 path_hash;
   guint32 inode_num;
   guint64 dirent, last_dirent, i;
+  GList *next, *l;
+
+  for (l = file->children; l != NULL; l = next)
+    {
+      next = l->next;
+      remove_slice_remove_file (mount, l->data, removed_slice);
+    }
 
   if (file->kernel_refs > 0)
     {
@@ -2249,27 +2248,26 @@ remove_slice_cb (gpointer key,
 	}
     }
 
-  if (file->file_ref_count > 0 || file->owned)
-    return FALSE;
-
-  inode = glick_mount_lookup_path (mount, file->path, NULL, NULL);
-
-  /* Free file if no more slices references it */
-  return inode == NULL;
+  if (file->file_ref_count == 0 && !file->owned)
+    {
+      inode = glick_mount_lookup_path (mount, file->path, NULL, NULL);
+      if (inode == NULL)
+	{
+	  /* Free file if no more slices references it */
+	  glick_mount_transient_file_unlink (file);
+	}
+    }
 }
 
 void
 glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice)
 {
-  struct RemoveData data;
+  GlickMountTransientFile *root;
 
-  data.mount = mount;
-  data.removed_slice = slice;
+  root = g_hash_table_lookup (mount->inode_to_file, 0);
 
   mount->slices = g_list_remove (mount->slices, slice);
-  g_hash_table_foreach_remove (mount->inode_to_file,
-			       remove_slice_cb,
-			       &data);
+  remove_slice_remove_file (mount, root, slice);
 }
 
 GlickMountRef *
