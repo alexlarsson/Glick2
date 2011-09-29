@@ -23,12 +23,8 @@
  * Add bloom table for hash lookups
  * Support sha1-based merging
  * Track installed bundles
- * Add public mount and merge into rest
  * Add installed bundles symlinks
- * Track kernel refs to inodes (lookup/forget)
- * Free transient dirs and invalidate inodes when slices are removed
  * Support inotify for exported files
- * Invalidate entries when slices are added
  * Support renames of transient files
  * Support access()
  * Support triggers
@@ -171,6 +167,7 @@ typedef struct {
 #define ENTRY_CACHE_TIMEOUT_SEC 10000
 #define ATTR_CACHE_TIMEOUT_SEC 10000
 
+static struct fuse_session *glick_fuse_session = NULL;
 static GHashTable *glick_mounts_by_id; /* id -> GlickMount */
 static GHashTable *glick_mounts_by_name; /* name -> GlickMount */
 static GlickMount *public_mount = NULL;
@@ -198,12 +195,14 @@ GlickMountTransientFile *glick_mount_transient_file_new_file (GlickMount *mount,
 void glick_mount_transient_file_stat (GlickMountTransientFile *file, struct stat *statbuf);
 void glick_mount_transient_file_unown (GlickMountTransientFile *file);
 void glick_mount_transient_file_own (GlickMountTransientFile *file);
-void glick_mount_transient_file_free (GlickMountTransientFile *file);
+void glick_mount_transient_file_unlink (GlickMountTransientFile *file);
 void glick_mount_add_slice (GlickMount *mount, GlickSlice *slice);
 static gboolean mount_ref_data_cb (GIOChannel   *source,
 				   GIOCondition  condition,
 				   gpointer      data);
 void glick_public_apply_to_mount (GlickPublic *public, GlickMount *mount);
+void glick_public_unapply_to_mount (GlickPublic *public, GlickMount *mount);
+void glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice);
 
 #if 1
 #define __debug__(x) g_print x
@@ -501,9 +500,10 @@ glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 	}
     }
 
+  /* Never cache negative lookups, as those ares hard to invalidate
+     when we add slices later */
   __debug__ (("replying with NOENT\n"));
-  e.ino = 0;
-  fuse_reply_entry (req, &e);
+  fuse_reply_err (req, ENOENT);
 }
 
 static void
@@ -521,7 +521,6 @@ glick_fs_forget (fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
 
   fuse_reply_none (req);
 }
-
 
 struct dirbuf {
   char *p;
@@ -558,7 +557,6 @@ dirbuf_free (struct dirbuf *b)
       g_free (b);
     }
 }
-
 
 #define min(x, y) ((x) < (y) ? (x) : (y))
 
@@ -1160,7 +1158,7 @@ glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
   /* Should be safe to free here, as kernel will drop the cache for this file
      due to the rmdir operation, and it should have no children due to above
      NOTEMPTY checks */
-  glick_mount_transient_file_free (file);
+  glick_mount_transient_file_unlink (file);
   fuse_reply_err (req, 0);
 }
 
@@ -1281,7 +1279,7 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
       return;
     }
 
-  glick_mount_transient_file_free (file);
+  glick_mount_transient_file_unlink (file);
   fuse_reply_err (req, 0);
 }
 
@@ -1675,6 +1673,14 @@ glick_mount_transient_file_stat (GlickMountTransientFile *file, struct stat *sta
 }
 
 void
+glick_mount_transient_file_unlink (GlickMountTransientFile *file)
+{
+  /* This will cause the file to be destroyed */
+  g_hash_table_remove (file->mount->inode_to_file,
+		       GUINT_TO_POINTER (file->inode));
+}
+
+void
 glick_mount_transient_file_free (GlickMountTransientFile *file)
 {
   glick_mount_transient_file_unown (file);
@@ -1689,7 +1695,6 @@ glick_mount_transient_file_free (GlickMountTransientFile *file)
 
   g_free (file->data);
 
-  g_hash_table_remove (file->mount->inode_to_file, GUINT_TO_POINTER (file->inode));
   g_hash_table_remove (file->mount->path_to_file, file->path);
   g_free (file->path);
   g_free (file);
@@ -1734,16 +1739,25 @@ glick_mount_unref (GlickMount *mount)
   mount->ref_count--;
   if (mount->ref_count == 0)
     {
-      /* TODO: Free outstanding transient files */
+      for (l = glick_publics; l != NULL; l = l->next)
+	{
+	  GlickPublic *public = l->data;
+	  glick_public_unapply_to_mount (public, mount);
+	}
+
+      while (mount->slices != NULL)
+	{
+	  GlickSlice *slice = mount->slices->data;
+	  glick_mount_remove_slice (mount, slice);
+	  glick_slice_unref (slice);
+	}
+
       g_hash_table_destroy (mount->inode_to_file);
       g_hash_table_destroy (mount->path_to_file);
 
       glick_mounts = g_list_remove (glick_mounts, mount);
       g_hash_table_remove (glick_mounts_by_id, GINT_TO_POINTER (mount->id));
       g_hash_table_remove (glick_mounts_by_name, mount->name);
-
-      for (l = mount->slices; l != NULL; l = l->next)
-	glick_slice_unref (l->data);
 
       g_list_free (mount->slices);
 
@@ -1775,7 +1789,7 @@ glick_mount_new (const char *name)
   else
     mount->name = g_strdup_printf ("%d", (int)mount->id);
 
-  mount->inode_to_file = g_hash_table_new (g_direct_hash, g_direct_equal);
+  mount->inode_to_file = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)glick_mount_transient_file_free);
   mount->path_to_file = g_hash_table_new (g_str_hash, g_str_equal);
   mount->next_mount_file_inode = 0;
 
@@ -1937,12 +1951,74 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
   mount->slices = g_list_prepend (mount->slices, slice);
 }
 
+struct RemoveData {
+  GlickMount *mount;
+  GlickSlice *removed_slice;
+};
+
+static gboolean
+remove_slice_cb (gpointer key,
+		 gpointer value,
+		 gpointer user_data)
+{
+  struct RemoveData *data = user_data;
+  GlickMountTransientFile *file = value;
+  GlickMount *mount = data->mount;
+  GlickSlice *removed_slice = data->removed_slice;
+  GlickSliceInode *inode;
+  guint32 path_hash;
+  guint32 inode_num;
+  guint64 dirent, last_dirent, i;
+
+  if (file->kernel_refs > 0)
+    {
+      fuse_ino_t fuse_inode;
+      struct fuse_chan *ch = fuse_session_next_chan (glick_fuse_session, NULL);
+
+      path_hash = djb_hash (file->path);
+      inode = glick_slice_lookup_path (removed_slice, file->path, path_hash, &inode_num);
+      if (inode != NULL && S_ISDIR (GUINT32_FROM_LE (inode->mode)))
+	{
+	  fuse_inode = TRANSIENT_FILE_INODE(mount->id, file->inode);
+	  dirent = GUINT64_FROM_LE (inode->offset);
+	  last_dirent = dirent + GUINT64_FROM_LE (inode->size);
+	  dirent = MIN (dirent, removed_slice->num_dirs);
+	  last_dirent = MIN (last_dirent, removed_slice->num_dirs);
+	  for (i = dirent; i < last_dirent; i++)
+	    {
+	      guint16 entry_inode = GUINT16_FROM_LE (removed_slice->dirs[i].inode);
+	      if (entry_inode < removed_slice->num_inodes)
+		{
+		  const char *name = glick_slice_lookup_string (removed_slice,
+								GUINT32_FROM_LE (removed_slice->inodes[entry_inode].name));
+		  if (name != NULL)
+		    fuse_lowlevel_notify_inval_entry (ch, fuse_inode, name, strlen (name));
+		}
+	    }
+	}
+    }
+
+  if (file->file_ref_count > 0 || file->owned)
+    return FALSE;
+
+  inode = glick_mount_lookup_path (mount, file->path, NULL, NULL);
+
+  /* Free file if no more slices references it */
+  return inode == NULL;
+}
+
 void
 glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice)
 {
-  /* TODO: Invalidate caches as needed  */
-  /* TODO: Remove unowned transients that no longer are backed by a slice */
+  struct RemoveData data;
+
+  data.mount = mount;
+  data.removed_slice = slice;
+
   mount->slices = g_list_remove (mount->slices, slice);
+  g_hash_table_foreach_remove (mount->inode_to_file,
+			       remove_slice_cb,
+			       &data);
 }
 
 GlickMountRef *
@@ -2188,8 +2264,6 @@ mount_ref_data_cb (GIOChannel   *source,
 {
   GlickMountRef *ref = data;
 
-  g_print ("mount_ref_data_cb %x\n", condition);
-
   if (condition & G_IO_HUP)
     {
       __debug__ (("socket %d hung up\n", ref->socket_fd));
@@ -2339,6 +2413,8 @@ main_loop (struct fuse_session *se)
   int fuse_fd = fuse_chan_fd (ch);
   GIOChannel *fuse_channel, *ready_pipe_channel;
   char *bundle_dir;
+
+  glick_fuse_session = se;
 
   mainloop = g_main_loop_new (NULL, TRUE);
 
