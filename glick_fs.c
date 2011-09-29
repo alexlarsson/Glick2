@@ -2179,7 +2179,7 @@ glick_public_new (char *filename)
     return NULL;
 
   public = g_new0 (GlickPublic, 1);
-  public->filename = g_strdup ("filename");
+  public->filename = g_strdup (filename);
   public->mtime = statbuf.st_mtime;
 
   header = (GlickBundleHeader *)data;
