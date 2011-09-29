@@ -2235,6 +2235,8 @@ glick_public_free (GlickPublic *public)
       GlickSlice *slice = l->data;
       glick_slice_unref (slice);
     }
+  g_list_free (public->slices);
+
   g_free (public->filename);
   g_free (public);
 }
@@ -2308,6 +2310,7 @@ scan_public_directory (const char *path)
       old_public = l->data;
       glick_public_free (old_public);
     }
+  g_list_free (publics);
 }
 
 static gboolean
