@@ -1564,6 +1564,56 @@ glick_fs_write (fuse_req_t req, fuse_ino_t ino, const char *buf,
     fuse_reply_err (req, errno);
 }
 
+static void
+glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
+		  int to_set, struct fuse_file_info *fi)
+{
+  GlickInode *inode;
+  GlickInodeTransient *transient;
+  struct stat res_stat;
+  int res;
+
+  __debug__ (("glick_fs_setattr %x to_set: %x\n", (int)ino, to_set));
+
+  inode = g_hash_table_lookup (glick_inodes, GINT_TO_POINTER (ino));
+  if (inode == NULL)
+    {
+      fuse_reply_err (req, ENOENT);
+      return;
+    }
+
+  switch (inode->type != GLICK_INODE_TYPE_TRANSIENT_FILE)
+    {
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  transient = (GlickInodeTransient *)inode;
+
+  if (to_set == FUSE_SET_ATTR_SIZE)
+    {
+
+      res = ftruncate (transient->fd, attr->st_size);
+      if (res != 0)
+	{
+	  int errsv = errno;
+	  __debug__ (("replying with %d\n", errsv));
+	  fuse_reply_err (req, errsv);
+	  return;
+	}
+    }
+  else
+    {
+      __debug__ (("replying with ENOSYS\n"));
+      fuse_reply_err (req, ENOSYS);
+      return;
+    }
+
+  glick_inode_stat (inode, &res_stat);
+  __debug__ (("replying with access\n"));
+  fuse_reply_attr (req, &res_stat, ATTR_CACHE_TIMEOUT_SEC);
+}
+
 /******************** End of fuse implementation ********************/
 
 
@@ -2566,9 +2616,7 @@ fuse_lowlevel_ops glick_fs_oper = {
   .release	= glick_fs_release,
   .read		= glick_fs_read,
   .write	= glick_fs_write,
-  /*
   .setattr	= glick_fs_setattr,
-  */
 };
 
 void *
