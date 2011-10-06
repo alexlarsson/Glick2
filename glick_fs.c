@@ -666,7 +666,16 @@ glick_inode_new_transient (void)
   return transient;
 }
 
+static GlickInodeSymlink *
+glick_inode_new_symlink (const char *data)
+{
+  GlickInodeSymlink *symlink;
 
+  symlink = (GlickInodeSymlink *)glick_inode_new (GLICK_INODE_TYPE_TRANSIENT_SYMLINK);
+  symlink->symlink = g_strdup (data);
+  symlink->base.mode = S_IFLNK | 0755;
+  return symlink;
+}
 
 static void
 glick_inode_stat (GlickInode *inode, struct stat *statbuf)
@@ -1131,6 +1140,101 @@ glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
       glick_inode_stat (&child->base, &e.attr);
       fuse_reply_entry (req, &e);
     }
+}
+
+static void
+glick_fs_symlink (fuse_req_t req, const char *link, fuse_ino_t parent,
+		  const char *name)
+{
+  struct fuse_entry_param e = {0};
+  GlickInodeDir *parent_inode;
+  GlickInode *hidden_inode;
+
+  __debug__ (("glick_fs_symlink %x %s %s\n", (int)parent, name, link));
+
+  e.generation = fuse_generation;
+  e.attr_timeout = ATTR_CACHE_TIMEOUT_SEC;
+  e.entry_timeout = ENTRY_CACHE_TIMEOUT_SEC;
+
+  parent_inode = find_dir_inode_for_op (req, parent);
+  if (parent_inode == NULL)
+    return;
+
+  if (!ensure_no_existing_child_for_op (req, parent_inode, name, &hidden_inode))
+    return;
+
+  if (hidden_inode)
+    {
+      /* Allow creation of hidden inodes, this lets us get inotify events... */
+      if (hidden_inode->type == GLICK_INODE_TYPE_SLICE_FILE)
+	{
+	  hidden_inode->kernel_ref_count++;
+	  glick_inode_unhide (hidden_inode);
+	  e.ino = hidden_inode->fuse_inode;
+	  glick_inode_stat (hidden_inode, &e.attr);
+	  fuse_reply_entry (req, &e);
+	}
+      else
+	fuse_reply_err (req, EPERM);
+    }
+  else
+    {
+      GlickInodeSymlink *child;
+      child = glick_inode_new_symlink (link);
+      child->base.kernel_ref_count++;
+      glick_inode_dir_add_child (parent_inode, name, (GlickInode *)child);
+      glick_inode_own ((GlickInode *)child);
+      glick_inode_unref ((GlickInode *)child);
+
+      e.ino = child->base.fuse_inode;
+      glick_inode_stat (&child->base, &e.attr);
+      fuse_reply_entry (req, &e);
+    }
+}
+
+static void
+glick_fs_readlink (fuse_req_t req, fuse_ino_t ino)
+{
+  GlickInode *inode;
+
+  __debug__ (("glick_fs_readlink %x\n", (int)ino));
+
+  inode = g_hash_table_lookup (glick_inodes, GINT_TO_POINTER (ino));
+  if (inode == NULL)
+    {
+      fuse_reply_err (req, ENOENT);
+      return;
+    }
+
+  switch (inode->type) {
+  case GLICK_INODE_TYPE_DIR:
+  case GLICK_INODE_TYPE_SOCKET:
+  case GLICK_INODE_TYPE_TRANSIENT_FILE:
+    fuse_reply_err (req, EINVAL);
+    break;
+  case GLICK_INODE_TYPE_TRANSIENT_SYMLINK:
+    {
+      GlickInodeSymlink *symlink = (GlickInodeSymlink *)inode;
+      fuse_reply_readlink (req, symlink->symlink);
+    }
+    break;
+  case GLICK_INODE_TYPE_SLICE_FILE:
+    {
+      GlickInodeSliceFile *file = (GlickInodeSliceFile *)inode;
+      if (S_ISLNK (inode->mode))
+	{
+	  const char *lnk = glick_slice_lookup_string (file->slice,
+						       GUINT64_FROM_LE (file->slice_inode->offset));
+	  if (lnk != NULL)
+	    fuse_reply_readlink (req, lnk);
+	  else
+	    fuse_reply_err (req, EACCES);
+	}
+	else
+	  fuse_reply_err (req, EINVAL);
+    }
+    break;
+  }
 }
 
 
@@ -2308,9 +2412,9 @@ fuse_lowlevel_ops glick_fs_oper = {
   .releasedir	= glick_fs_releasedir,
   .mknod	= glick_fs_mknod,
   .mkdir	= glick_fs_mkdir,
-  /*
-  .readlink	= glick_fs_readlink,
   .symlink	= glick_fs_symlink,
+  .readlink	= glick_fs_readlink,
+  /*
   .open		= glick_fs_open,
   .release	= glick_fs_release,
   .read		= glick_fs_read,
