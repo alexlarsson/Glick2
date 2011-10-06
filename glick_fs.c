@@ -917,8 +917,6 @@ glick_fs_forget (fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
   __debug__(("glick_fs_forget %x %ld", (int)ino, nlookup));
 
   inode = g_hash_table_lookup (glick_inodes, GINT_TO_POINTER (ino));
-  g_assert (inode != NULL);
-
   if (inode != NULL)
     {
       g_assert (inode->kernel_ref_count >= nlookup);
