@@ -1143,6 +1143,92 @@ glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
 }
 
 static void
+glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
+{
+  GlickInodeDir *parent_inode;
+  GlickInode *child;
+  GlickInodeDir *child_dir;
+
+  __debug__ (("glick_fs_rmdir %x %s\n", (int)parent, name));
+
+  parent_inode = find_dir_inode_for_op (req, parent);
+  if (parent_inode == NULL)
+    return;
+
+  child = find_existing_child_inode_for_op (req, parent_inode, name);
+  if (child == NULL)
+    return;
+
+  if (child->type != GLICK_INODE_TYPE_DIR)
+    {
+      fuse_reply_err (req, ENOTDIR);
+      return;
+    }
+
+  child_dir = (GlickInodeDir *)child;
+  if (child_dir->mount &&
+      glick_mount_lookup_path (child_dir->mount, child_dir->mount_path, NULL, NULL) != NULL)
+    {
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  if (g_hash_table_size (child_dir->known_children) != 0)
+    {
+      fuse_reply_err (req, ENOTEMPTY);
+      return;
+    }
+
+  glick_inode_dir_remove_child (parent_inode, name);
+
+  fuse_reply_err (req, 0);
+}
+
+static void
+glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
+{
+  GlickInodeDir *parent_inode;
+  GlickInode *child;
+
+  __debug__ (("glick_fs_unlink %x %s\n", (int)parent, name));
+
+  parent_inode = find_dir_inode_for_op (req, parent);
+  if (parent_inode == NULL)
+    return;
+
+  child = find_existing_child_inode_for_op (req, parent_inode, name);
+  if (child == NULL)
+    return;
+
+  if (parent_inode->mount)
+    {
+      char *path = g_build_filename (parent_inode->mount_path, name, NULL);
+      if (glick_mount_lookup_path (parent_inode->mount, path, NULL, NULL) != NULL)
+	{
+	  fuse_reply_err (req, EACCES);
+	  g_free (path);
+	  return;
+	}
+    }
+
+  if (child->type == GLICK_INODE_TYPE_DIR)
+    {
+      fuse_reply_err (req, EISDIR);
+      return;
+    }
+
+  if (child->type != GLICK_INODE_TYPE_TRANSIENT_FILE &&
+      child->type != GLICK_INODE_TYPE_TRANSIENT_SYMLINK)
+    {
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  glick_inode_dir_remove_child (parent_inode, name);
+  fuse_reply_err (req, 0);
+}
+
+static void
 glick_fs_symlink (fuse_req_t req, const char *link, fuse_ino_t parent,
 		  const char *name)
 {
@@ -2412,6 +2498,8 @@ fuse_lowlevel_ops glick_fs_oper = {
   .releasedir	= glick_fs_releasedir,
   .mknod	= glick_fs_mknod,
   .mkdir	= glick_fs_mkdir,
+  .unlink	= glick_fs_unlink,
+  .rmdir	= glick_fs_rmdir,
   .symlink	= glick_fs_symlink,
   .readlink	= glick_fs_readlink,
   /*
@@ -2420,8 +2508,6 @@ fuse_lowlevel_ops glick_fs_oper = {
   .read		= glick_fs_read,
   .write	= glick_fs_write,
   .setattr	= glick_fs_setattr,
-  .unlink	= glick_fs_unlink,
-  .rmdir	= glick_fs_rmdir,
   */
 };
 
