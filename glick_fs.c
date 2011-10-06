@@ -428,7 +428,6 @@ glick_inode_unref (GlickInode *inode)
       g_hash_table_destroy (dir->known_children);
       if (dir->mount)
 	{
-	  glick_mount_unref (dir->mount);
 	  g_free (dir->mount_path);
 	}
       break;
