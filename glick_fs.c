@@ -535,12 +535,6 @@ glick_inode_dir_remove_stale_children (GlickInodeDir *dir)
   g_hash_table_foreach_remove (dir->known_children, remove_stale_children, dir);
 }
 
-static gboolean
-glick_inode_is_owned (GlickInode *inode)
-{
-  return (inode->flags & GLICK_INODE_FLAGS_OWNED) != 0;
-}
-
 static void
 glick_inode_set_flags (GlickInode *inode, guint32 flags)
 {
@@ -553,6 +547,12 @@ glick_inode_unset_flags (GlickInode *inode, guint32 flags)
   inode->flags &= ~flags;
 }
 
+static gboolean
+glick_inode_is_owned (GlickInode *inode)
+{
+  return (inode->flags & GLICK_INODE_FLAGS_OWNED) != 0;
+}
+
 static void
 glick_inode_own (GlickInode *inode)
 {
@@ -563,6 +563,25 @@ static void
 glick_inode_unown (GlickInode *inode)
 {
   glick_inode_unset_flags (inode, GLICK_INODE_FLAGS_OWNED);
+}
+
+static gboolean
+glick_inode_is_hidden (GlickInode *inode)
+{
+  return (inode->flags & GLICK_INODE_FLAGS_HIDDEN) != 0;
+}
+
+static void
+glick_inode_hide (GlickInode *inode)
+{
+  g_print ("glick_inode_hide %p\n", inode);
+  glick_inode_set_flags (inode, GLICK_INODE_FLAGS_HIDDEN);
+}
+
+static void
+glick_inode_unhide (GlickInode *inode)
+{
+  glick_inode_unset_flags (inode, GLICK_INODE_FLAGS_HIDDEN);
 }
 
 static GlickInodeDir *
