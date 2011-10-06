@@ -462,9 +462,19 @@ static void
 glick_inode_dir_add_child (GlickInodeDir *dir, const char *name, GlickInode *child)
 {
   g_assert (g_hash_table_lookup (dir->known_children, name) == NULL);
-  if (g_hash_table_size (dir->known_children) == 0)
-    glick_inode_ref ((GlickInode *)dir);
   g_hash_table_insert (dir->known_children, g_strdup (name), glick_inode_ref (child));
+
+  if (child->type == GLICK_INODE_TYPE_DIR)
+    {
+      GlickInodeDir *child_dir = (GlickInodeDir *)child;
+      child_dir->parent = dir;
+
+      if (dir->mount != NULL)
+	{
+	  child_dir->mount = dir->mount;
+	  child_dir->mount_path = g_build_filename (dir->mount_path, name, NULL);
+	}
+    }
 }
 
 static void
@@ -472,8 +482,6 @@ glick_inode_dir_remove_child (GlickInodeDir *dir, const char *name)
 {
   g_assert (g_hash_table_lookup (dir->known_children, name) != NULL);
   g_hash_table_remove (dir->known_children, name);
-  if (g_hash_table_size (dir->known_children) == 0)
-    glick_inode_unref ((GlickInode *)dir);
 }
 
 static void glick_inode_dir_remove_stale_children (GlickInodeDir *dir);
@@ -524,12 +532,7 @@ remove_stale_children (gpointer  key,
 static void
 glick_inode_dir_remove_stale_children (GlickInodeDir *dir)
 {
-  guint removed;
-
-  removed = g_hash_table_foreach_remove (dir->known_children, remove_stale_children, dir);
-  if (removed > 0 &&
-      g_hash_table_size (dir->known_children) == 0)
-    glick_inode_unref ((GlickInode *)dir);
+  g_hash_table_foreach_remove (dir->known_children, remove_stale_children, dir);
 }
 
 static gboolean
@@ -563,24 +566,13 @@ glick_inode_unown (GlickInode *inode)
 }
 
 static GlickInodeDir *
-glick_inode_new_dir (GlickInodeDir *parent, const char *name)
+glick_inode_new_dir (void)
 {
   GlickInodeDir *dir = (GlickInodeDir *)glick_inode_new (GLICK_INODE_TYPE_DIR);
 
   dir->base.mode = S_IFDIR | 0755;
   dir->known_children = g_hash_table_new_full (g_str_hash, g_str_equal,
 					       g_free, (GDestroyNotify)glick_inode_unref);
-  if (parent)
-    {
-      dir->parent = parent;
-      glick_inode_dir_add_child (parent, name, &dir->base);
-
-      if (parent->mount != NULL)
-	{
-	  dir->mount = parent->mount;
-	  dir->mount_path = g_build_filename (parent->mount_path, name, NULL);
-	}
-    }
 
   return dir;
 }
@@ -715,16 +707,16 @@ create_child_from_slice_inode (GlickInodeDir *parent_inode, const char *name,
 
   if (S_ISDIR (mode))
     {
-      dir = glick_inode_new_dir (parent_inode, name);
+      dir = glick_inode_new_dir ();
       dir->base.mode = mode;
       inode = (GlickInode *)dir;
     }
   else
     {
       inode = (GlickInode *)glick_inode_new_slice_file (slice, slice_inode);
-      glick_inode_dir_add_child (parent_inode, name, inode);
     }
 
+  glick_inode_dir_add_child (parent_inode, name, inode);
   glick_inode_unref (inode); // We don't return an owned ref, but the one owned by parent_inode->known_children
 
   return inode;
@@ -2667,7 +2659,8 @@ glick_mount_new (const char *name)
       glick_public_apply_to_mount (public, mount);
     }
 
-  mount->dir = glick_inode_new_dir (glick_root, mount->name);
+  mount->dir = glick_inode_new_dir ();
+  glick_inode_dir_add_child (glick_root, mount->name, (GlickInode *)mount->dir);
   glick_inode_own ((GlickInode *)mount->dir);
   mount->dir->mount = mount;
   mount->dir->mount_path = g_strdup ("/");
@@ -3572,10 +3565,11 @@ main (int argc, char *argv[])
 
   glick_inodes = g_hash_table_new (g_direct_hash, g_direct_equal);
 
-  glick_root = glick_inode_new_dir (NULL, "/");
+  glick_root = glick_inode_new_dir ();
   glick_inode_own ((GlickInode *)glick_root);
 
-  glick_bundles_dir = glick_inode_new_dir (glick_root, ".bundles");
+  glick_bundles_dir = glick_inode_new_dir ();
+  glick_inode_dir_add_child (glick_root, ".bundles", (GlickInode *)glick_bundles_dir);
   glick_inode_own ((GlickInode *)glick_bundles_dir);
 
   glick_mounts_by_id = g_hash_table_new (g_direct_hash, g_direct_equal);
