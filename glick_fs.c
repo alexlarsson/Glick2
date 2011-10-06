@@ -28,10 +28,6 @@
  * Support access()
  * Support triggers
  * Do file writes in threads
- * Clean up non-slice file handling, use transient files for
- *      all inodes with a single hash table mapping id to details
- *      even for toplevel dirs, socket etc
- * Separate out names from inodes => dirents. Allows multiple hard links
  * Use sha1 at the file level
  */
 
