@@ -761,49 +761,62 @@ try_to_create_child (GlickInodeDir *dir, const char *name)
   return NULL;
 }
 
+typedef void (*CreateFunc)(GlickInodeDir *dir, GlickInode *inode, const char *name, gpointer user_data);
+
 static void
-try_to_create_children (GlickInodeDir *dir)
+try_to_create_children_for_slice (GlickInodeDir *dir, GlickSlice *slice, CreateFunc create_func, gpointer user_data)
 {
   GlickMount *mount = dir->mount;
   guint32 dir_path_hash;
-  GList *l;
+  guint64 dirent, last_dirent, i;
+  guint32 inode_num;
+  GlickSliceInode *slice_inode;
+  GlickInode *new;
 
   if (mount == NULL)
     return;
 
   dir_path_hash = djb_hash (dir->mount_path);
 
-  for (l = mount->slices; l != NULL; l = l->next)
+  slice_inode = glick_slice_lookup_path (slice, dir->mount_path, dir_path_hash, &inode_num);
+  if (slice_inode != NULL && S_ISDIR (GUINT32_FROM_LE (slice_inode->mode)))
     {
-      GlickSlice *slice = l->data;
-      guint64 dirent, last_dirent, i;
-      guint32 inode_num;
-      GlickSliceInode *slice_inode;
-
-      slice_inode = glick_slice_lookup_path (slice, dir->mount_path, dir_path_hash, &inode_num);
-      if (slice_inode != NULL && S_ISDIR (GUINT32_FROM_LE (slice_inode->mode)))
+      dirent = GUINT64_FROM_LE (slice_inode->offset);
+      last_dirent = dirent + GUINT64_FROM_LE (slice_inode->size);
+      dirent = MIN (dirent, slice->num_dirs);
+      last_dirent = MIN (last_dirent, slice->num_dirs);
+      for (i = dirent; i < last_dirent; i++)
 	{
-	  dirent = GUINT64_FROM_LE (slice_inode->offset);
-	  last_dirent = dirent + GUINT64_FROM_LE (slice_inode->size);
-	  dirent = MIN (dirent, slice->num_dirs);
-	  last_dirent = MIN (last_dirent, slice->num_dirs);
-	  for (i = dirent; i < last_dirent; i++)
+	  guint16 entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
+	  if (entry_inode < slice->num_inodes)
 	    {
-	      guint16 entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
-	      if (entry_inode < slice->num_inodes)
+	      GlickSliceInode *entry_slice_inode = &slice->inodes[entry_inode];
+	      const char *name =
+		glick_slice_lookup_string (slice, GUINT32_FROM_LE (entry_slice_inode->name));
+	      if (name != NULL && g_hash_table_lookup (dir->known_children, name) == NULL)
 		{
-		  GlickSliceInode *entry_slice_inode = &slice->inodes[entry_inode];
-		  const char *name =
-		    glick_slice_lookup_string (slice, GUINT32_FROM_LE (entry_slice_inode->name));
-		  if (name != NULL && g_hash_table_lookup (dir->known_children, name) == NULL)
-		    {
-		      create_child_from_slice_inode (dir, name, entry_slice_inode, slice, entry_inode);
-		    }
+		  new = create_child_from_slice_inode (dir, name, entry_slice_inode, slice, entry_inode);
+		  if (create_func)
+		    create_func (dir, new, name, user_data);
 		}
 	    }
 	}
     }
 }
+
+static void
+try_to_create_children (GlickInodeDir *dir)
+{
+  GlickMount *mount = dir->mount;
+  GList *l;
+
+  if (mount == NULL)
+    return;
+
+  for (l = mount->slices; l != NULL; l = l->next)
+    try_to_create_children_for_slice (dir, l->data, NULL, NULL);
+}
+
 
 static GlickInodeDir *
 find_dir_inode_for_op (fuse_req_t req, fuse_ino_t ino)
@@ -835,37 +848,39 @@ find_existing_child_inode_for_op (fuse_req_t req, GlickInodeDir *parent_inode, c
 
   child_inode = g_hash_table_lookup (parent_inode->known_children, name);
   if (child_inode == NULL)
-    {
       child_inode = try_to_create_child (parent_inode, name);
-      if (child_inode == NULL)
-	{
-	  __debug__ (("replying with NOENT\n"));
-	  fuse_reply_err (req, ENOENT);
-	  return NULL;
-	}
+  if (child_inode == NULL ||
+      glick_inode_is_hidden (child_inode))
+    {
+      __debug__ (("replying with NOENT\n"));
+      fuse_reply_err (req, ENOENT);
+      return NULL;
     }
 
   return child_inode;
 }
 
 static gboolean
-ensure_no_existing_child_for_op (fuse_req_t req, GlickInodeDir *parent_inode, const char *name)
+ensure_no_existing_child_for_op (fuse_req_t req, GlickInodeDir *parent_inode, const char *name, GlickInode **hidden_inode)
 {
   GlickInode *child_inode;
 
   child_inode = g_hash_table_lookup (parent_inode->known_children, name);
   if (child_inode == NULL)
     child_inode = try_to_create_child (parent_inode, name);
-  if (child_inode != NULL)
+  if (child_inode != NULL &&
+      (hidden_inode == NULL || !glick_inode_is_hidden (child_inode)))
     {
       __debug__ (("replying with EXIST\n"));
       fuse_reply_err (req, EEXIST);
       return FALSE;
     }
 
+  if (hidden_inode != NULL)
+      *hidden_inode = child_inode;
+
   return TRUE;
 }
-
 static void
 glick_fs_lookup (fuse_req_t req, fuse_ino_t parent,
 		 const char *name)
@@ -944,6 +959,8 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
   GlickInodeSocket *socket_inode;
 
   e.generation = fuse_generation;
+  e.attr_timeout = ATTR_CACHE_TIMEOUT_SEC;
+  e.entry_timeout = ENTRY_CACHE_TIMEOUT_SEC;
 
   __debug__ (("glick_fs_mknod %x %s %x %x\n", (int)parent, name, mode, (int)rdev));
 
@@ -951,11 +968,11 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
   if (parent_inode == NULL)
     return;
 
-  if (!ensure_no_existing_child_for_op (req, parent_inode, name))
-    return;
-
   if (S_ISSOCK (mode))
     {
+      if (!ensure_no_existing_child_for_op (req, parent_inode, name, NULL))
+	return;
+
       if (parent_inode != glick_root ||
 	  strcmp (SOCKET_NAME, name) != 0)
 	{
@@ -964,21 +981,94 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 	}
 
       socket_inode = glick_inode_new_socket ();
+      socket_inode->base.kernel_ref_count++;
       glick_inode_own ((GlickInode *)socket_inode);
       glick_inode_dir_add_child (parent_inode, name, (GlickInode *)socket_inode);
 
       e.ino = socket_inode->base.fuse_inode;
-      e.generation = fuse_generation;
-      e.attr_timeout = ATTR_CACHE_TIMEOUT_SEC;
-      e.entry_timeout = ENTRY_CACHE_TIMEOUT_SEC;
-
       glick_inode_stat ((GlickInode *)socket_inode, &e.attr);
       fuse_reply_entry (req, &e);
     }
+  else if (S_ISREG (mode))
+    {
+      GlickInode *hidden_inode;
+
+      if (!ensure_no_existing_child_for_op (req, parent_inode, name, &hidden_inode))
+	return;
+
+      if (hidden_inode)
+	{
+	  /* Allow creation of hidden inodes, this lets us get inotify events... */
+	  if (hidden_inode->type == GLICK_INODE_TYPE_SLICE_FILE)
+	    {
+	      hidden_inode->kernel_ref_count++;
+	      glick_inode_unhide (hidden_inode);
+	      e.ino = hidden_inode->fuse_inode;
+	      glick_inode_stat (hidden_inode, &e.attr);
+	      fuse_reply_entry (req, &e);
+	    }
+	  else
+	    fuse_reply_err (req, EPERM);
+	}
+      else
+	{
+	  /* TODO: Alloc creation of transient files */
+	  fuse_reply_err (req, EPERM);
+	}
+    }
   else
     fuse_reply_err (req, EPERM);
-
 }
+
+static void
+glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
+		mode_t mode)
+{
+  struct fuse_entry_param e = {0};
+  GlickInodeDir *parent_inode;
+  GlickInode *hidden_inode;
+
+  e.generation = fuse_generation;
+  e.attr_timeout = ATTR_CACHE_TIMEOUT_SEC;
+  e.entry_timeout = ENTRY_CACHE_TIMEOUT_SEC;
+
+  __debug__ (("glick_fs_mkdir %x %s %x\n", (int)parent, name, mode));
+
+  parent_inode = find_dir_inode_for_op (req, parent);
+  if (parent_inode == NULL)
+    return;
+
+  if (!ensure_no_existing_child_for_op (req, parent_inode, name, &hidden_inode))
+    return;
+
+  if (hidden_inode)
+    {
+      /* Allow creation of hidden inodes, this lets us get inotify events... */
+      if (hidden_inode->type == GLICK_INODE_TYPE_DIR)
+	{
+	  hidden_inode->kernel_ref_count++;
+	  glick_inode_unhide (hidden_inode);
+	  e.ino = hidden_inode->fuse_inode;
+	  glick_inode_stat (hidden_inode, &e.attr);
+	  fuse_reply_entry (req, &e);
+	}
+      else
+	fuse_reply_err (req, EPERM);
+    }
+  else
+    {
+      GlickInodeDir *child;
+      child = glick_inode_new_dir ();
+      child->base.kernel_ref_count++;
+      glick_inode_dir_add_child (parent_inode, name, (GlickInode *)child);
+      glick_inode_own ((GlickInode *)child);
+
+      e.ino = child->base.fuse_inode;
+      glick_inode_stat (&child->base, &e.attr);
+      fuse_reply_entry (req, &e);
+    }
+}
+
 
 static void
 glick_fs_opendir (fuse_req_t req, fuse_ino_t ino,
@@ -2149,10 +2239,11 @@ fuse_lowlevel_ops glick_fs_oper = {
   .lookup	= glick_fs_lookup,
   .forget	= glick_fs_forget,
   .getattr	= glick_fs_getattr,
-  .mknod	= glick_fs_mknod,
   .opendir	= glick_fs_opendir,
   .readdir	= glick_fs_readdir,
   .releasedir	= glick_fs_releasedir,
+  .mknod	= glick_fs_mknod,
+  .mkdir	= glick_fs_mkdir,
   /*
   .readlink	= glick_fs_readlink,
   .symlink	= glick_fs_symlink,
@@ -2162,7 +2253,6 @@ fuse_lowlevel_ops glick_fs_oper = {
   .write	= glick_fs_write,
   .setattr	= glick_fs_setattr,
   .unlink	= glick_fs_unlink,
-  .mkdir	= glick_fs_mkdir,
   .rmdir	= glick_fs_rmdir,
   */
 };
@@ -2829,72 +2919,58 @@ glick_mount_new_for_bundle (int fd)
 
 typedef struct {
   char *path;
-  fuse_ino_t hidden_inode;
+  GlickInode *hidden_inode;
 } AddedFile;
 
-typedef struct {
-  GlickMount *mount;
-  GlickSlice *added_slice;
-  AddedFile *added_files;
-  int num_added_files;
-} CollectInotifyData;
-
 static void
-collect_inotify_paths_cb (gpointer key,
-			  gpointer value,
+collect_inotify_paths_cb (GlickInodeDir *dir,
+			  GlickInode *inode,
+			  const char *name,
 			  gpointer user_data)
 {
-  CollectInotifyData *data = user_data;
-  GlickMountTransientFile *file = value;
-  GlickSlice *slice = data->added_slice;
-  guint32 path_hash;
-  guint32 inode_num;
-  GlickSliceInode *inode;
-  guint64 dirent, last_dirent, i;
+  GList **added_files = user_data;
 
-  if (file->kernel_refs > 0)
+  g_print ("Collect inotify paths cb %s %s\n", dir->mount_path, name);
+
+  if (S_ISREG (inode->mode) || S_ISDIR (inode->mode) )
     {
-      path_hash = djb_hash (file->path);
-      inode = glick_slice_lookup_path (slice, file->path,
-				       path_hash, &inode_num);
-      if (inode != NULL && S_ISDIR (GUINT32_FROM_LE (inode->mode)))
-	{
-	  dirent = GUINT64_FROM_LE (inode->offset);
-	  last_dirent = dirent + GUINT64_FROM_LE (inode->size);
-	  dirent = MIN (dirent, slice->num_dirs);
-	  last_dirent = MIN (last_dirent, slice->num_dirs);
+      AddedFile *f = g_new0 (AddedFile, 1);
 
-	  data->added_files = g_renew (AddedFile, data->added_files,
-				       data->num_added_files + last_dirent - dirent);
-	  for (i = dirent; i < last_dirent; i++)
-	    {
-	      guint16 entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
-	      if (entry_inode < slice->num_inodes)
-		{
-		  const char *name =
-		    glick_slice_lookup_string (slice,
-					       GUINT32_FROM_LE (slice->inodes[entry_inode].name));
+      f->path =
+	g_build_filename (glick_mountpoint, dir->mount->name, dir->mount_path, name, NULL);
+      f->hidden_inode = glick_inode_ref (inode);
+      glick_inode_hide (inode);
 
-		  if (name != NULL)
-		    {
-		      fuse_ino_t hide_inode;
-		      data->added_files[data->num_added_files].path =
-			g_build_filename (glick_mountpoint, data->mount->name, file->path, name, NULL);
-		      hide_inode = SLICE_FILE_INODE(slice->id, entry_inode);
-		      data->added_files[data->num_added_files].hidden_inode = hide_inode;
-		      g_hash_table_insert (data->mount->hidden_inodes,
-					   GUINT_TO_POINTER (hide_inode), GUINT_TO_POINTER(TRUE));
-		      data->num_added_files++;
-		    }
-		}
-	    }
-	}
+      *added_files = g_list_prepend (*added_files, f);
     }
+}
+
+static void
+collect_inotify_paths (GlickInodeDir *dir,
+		       GlickSlice *slice,
+		       GList **added_files)
+{
+  GHashTableIter iter;
+  gpointer key, value;
+
+  g_print ("Collect inotify paths %s\n", dir->mount_path);
+
+  g_hash_table_iter_init (&iter, dir->known_children);
+  while (g_hash_table_iter_next (&iter, &key, &value))
+    {
+      GlickInode *child = value;
+
+      if (child->type == GLICK_INODE_TYPE_DIR)
+	collect_inotify_paths ((GlickInodeDir *)child, slice, added_files);
+    }
+
+  if (dir->base.kernel_ref_count > 0)
+    try_to_create_children_for_slice (dir, slice, collect_inotify_paths_cb, added_files);
 }
 
 typedef struct {
   GlickThreadOp base;
-  AddedFile *added_files;
+  GList *added_files;
   int num_added_files;
   GlickMount *mount;
 } GlickThreadOpChanges;
@@ -2903,17 +2979,18 @@ static void
 changes_op_result (GlickThreadOp *op)
 {
   GlickThreadOpChanges *changes = (GlickThreadOpChanges *)op;
-  int i;
+  GList *l;
 
-  for (i = 0; i < changes->num_added_files; i++)
+  for (l = changes->added_files; l != NULL; l = l->next)
     {
-      AddedFile *added_file = &changes->added_files[i];
+      AddedFile *added_file = l->data;
       g_free (added_file->path);
-      g_hash_table_remove (changes->mount->hidden_inodes,
-			   GUINT_TO_POINTER (added_file->hidden_inode));
+      glick_inode_unhide (added_file->hidden_inode);
+      glick_inode_unref (added_file->hidden_inode);
+      g_free (added_file);
     }
 
-  g_free (changes->added_files);
+  g_list_free (changes->added_files);
   glick_mount_unref (changes->mount);
 }
 
@@ -2922,40 +2999,46 @@ static void
 changes_op_thread (GlickThreadOp *op)
 {
   GlickThreadOpChanges *changes = (GlickThreadOpChanges *)op;
-  int i;
+  GList *l;
 
-  for (i = 0; i < changes->num_added_files; i++)
+  for (l = changes->added_files; l != NULL; l = l->next)
     {
-      AddedFile *added_file = &changes->added_files[i];
-      mknod (added_file->path, S_IFREG | 0755, 0);
+      AddedFile *added_file = l->data;
+      if (S_ISDIR (added_file->hidden_inode->mode))
+	{
+	  g_print ("mkdir %s\n", added_file->path);
+	  if (mkdir (added_file->path, 0755) == -1)
+	    perror ("mkdir");
+	}
+      else
+	{
+	  g_print ("mknode %s\n", added_file->path);
+	  if (mknod (added_file->path, S_IFREG | 0755, 0) == -1)
+	    perror ("mknod");
+	}
     }
 }
 
 void
 glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
 {
-  CollectInotifyData data = { 0 };
-
   mount->slices = g_list_prepend (mount->slices, slice);
 
   if (mount->mounted &&
       (slice->flags & GLICK_SLICE_FLAGS_EXPORT))
     {
-      data.added_slice = slice;
-      data.added_files = NULL;
-      data.num_added_files = 0;
-      data.mount = mount;
-      g_hash_table_foreach (mount->inode_to_file,
-			    collect_inotify_paths_cb,
-			    &data);
+      GList *added_files = NULL;
+      collect_inotify_paths (mount->dir,
+			     slice,
+			     &added_files);
+      added_files = g_list_reverse (added_files);
 
-      if (data.added_files)
+      if (added_files)
 	{
 	  GlickThreadOpChanges *op;
 
 	  op = g_new0 (GlickThreadOpChanges, 1);
-	  op->added_files = data.added_files;
-	  op->num_added_files = data.num_added_files;
+	  op->added_files = added_files;
 	  op->mount = glick_mount_ref (mount);
 
 	  glick_thread_push ((GlickThreadOp *)op,
@@ -3585,6 +3668,7 @@ main (int argc, char *argv[])
   glick_inodes = g_hash_table_new (g_direct_hash, g_direct_equal);
 
   glick_root = glick_inode_new_dir ();
+  glick_root->base.kernel_ref_count++;
   glick_inode_own ((GlickInode *)glick_root);
 
   glick_bundles_dir = glick_inode_new_dir ();
