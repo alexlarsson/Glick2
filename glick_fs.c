@@ -1013,6 +1013,7 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
       socket_inode->base.kernel_ref_count++;
       glick_inode_own ((GlickInode *)socket_inode);
       glick_inode_dir_add_child (parent_inode, name, (GlickInode *)socket_inode);
+      glick_inode_unref ((GlickInode *)socket_inode);
 
       e.ino = socket_inode->base.fuse_inode;
       glick_inode_stat ((GlickInode *)socket_inode, &e.attr);
@@ -1091,6 +1092,7 @@ glick_fs_mkdir (fuse_req_t req, fuse_ino_t parent, const char *name,
       child->base.kernel_ref_count++;
       glick_inode_dir_add_child (parent_inode, name, (GlickInode *)child);
       glick_inode_own ((GlickInode *)child);
+      glick_inode_unref ((GlickInode *)child);
 
       e.ino = child->base.fuse_inode;
       glick_inode_stat (&child->base, &e.attr);
