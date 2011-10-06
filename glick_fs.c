@@ -484,6 +484,7 @@ glick_inode_dir_remove_child (GlickInodeDir *dir, const char *name)
 }
 
 static void glick_inode_dir_remove_stale_children (GlickInodeDir *dir);
+static void glick_inode_dir_remove_all_children (GlickInodeDir *dir);
 static gboolean glick_inode_is_owned (GlickInode *inode);
 
 static gboolean
@@ -532,6 +533,37 @@ static void
 glick_inode_dir_remove_stale_children (GlickInodeDir *dir)
 {
   g_hash_table_foreach_remove (dir->known_children, remove_stale_children, dir);
+}
+
+static gboolean
+remove_all_children (gpointer  key,
+		     gpointer  value,
+		     gpointer  user_data)
+{
+  GlickInodeDir *dir = user_data;
+  const char *name = key;
+  GlickInode *child = value;
+
+  if (child->type == GLICK_INODE_TYPE_DIR)
+    {
+      GlickInodeDir *child_dir = (GlickInodeDir *)child;
+      glick_inode_dir_remove_all_children (child_dir);
+    }
+
+  if (child->kernel_ref_count > 0)
+    {
+      struct fuse_chan *ch = fuse_session_next_chan (glick_fuse_session, NULL);
+
+      fuse_lowlevel_notify_inval_entry (ch, dir->base.fuse_inode, name, strlen (name));
+    }
+
+  return TRUE;
+}
+
+static void
+glick_inode_dir_remove_all_children (GlickInodeDir *dir)
+{
+  g_hash_table_foreach_remove (dir->known_children, remove_all_children, dir);
 }
 
 static void
@@ -2704,7 +2736,7 @@ glick_mount_unref (GlickMount *mount)
 	  glick_slice_unref (slice);
 	}
 
-      // TODO: Remove owned children of mount
+      glick_inode_dir_remove_all_children (mount->dir);
       glick_inode_dir_remove_child (glick_root, mount->name);
       glick_inode_unref ((GlickInode *)mount->dir);
 
