@@ -648,6 +648,26 @@ glick_inode_new_socket (void)
   return socket;
 }
 
+static GlickInodeTransient *
+glick_inode_new_transient (void)
+{
+  GlickInodeTransient *transient;
+  char *tmp_path;
+  int fd;
+
+  fd = g_file_open_tmp ("XXXXXX.glick", &tmp_path, NULL);
+  if (fd == -1)
+    return NULL;
+  unlink (tmp_path);
+
+  transient = (GlickInodeTransient *)glick_inode_new (GLICK_INODE_TYPE_TRANSIENT_FILE);
+  transient->fd = fd;
+  transient->base.mode = S_IFREG | 0755;
+  return transient;
+}
+
+
+
 static void
 glick_inode_stat (GlickInode *inode, struct stat *statbuf)
 {
@@ -1042,8 +1062,21 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 	}
       else
 	{
-	  /* TODO: Alloc creation of transient files */
-	  fuse_reply_err (req, EPERM);
+	  GlickInodeTransient *transient = glick_inode_new_transient ();
+
+	  if (transient == NULL)
+	    {
+	      fuse_reply_err (req, ENOMEM);
+	    }
+	  else
+	    {
+	      glick_inode_dir_add_child (parent_inode, name, (GlickInode *)transient);
+	      glick_inode_own ((GlickInode *)transient);
+	      glick_inode_unref ((GlickInode *)transient);
+	      e.ino = transient->base.fuse_inode;
+	      glick_inode_stat ((GlickInode *)transient, &e.attr);
+	      fuse_reply_entry (req, &e);
+	    }
 	}
     }
   else
