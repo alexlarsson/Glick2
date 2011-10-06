@@ -503,7 +503,7 @@ remove_stale_children (gpointer  key,
       GlickInodeDir *child_dir = (GlickInodeDir *)child;
       glick_inode_dir_remove_stale_children (child_dir);
 
-      if (g_hash_table_size (dir->known_children) > 0)
+      if (g_hash_table_size (child_dir->known_children) > 0)
 	return FALSE;
     }
 
