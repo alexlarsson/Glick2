@@ -974,7 +974,7 @@ glick_fs_forget (fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
 {
   GlickInode *inode;
 
-  __debug__(("glick_fs_forget %x %ld", (int)ino, nlookup));
+  __debug__(("glick_fs_forget %x %ld\n", (int)ino, nlookup));
 
   inode = g_hash_table_lookup (glick_inodes, GINT_TO_POINTER (ino));
   if (inode != NULL)
@@ -1387,10 +1387,182 @@ glick_fs_releasedir (fuse_req_t req, fuse_ino_t ino,
   fuse_reply_err (req, 0);
 }
 
+static void
+glick_fs_open (fuse_req_t req, fuse_ino_t ino,
+	       struct fuse_file_info *fi)
+{
+  GlickInode *inode;
+  GlickOpenFile *open;
+
+  __debug__ (("glick_fs_open %x\n", (int)ino));
+
+  inode = g_hash_table_lookup (glick_inodes, GINT_TO_POINTER (ino));
+  if (inode == NULL)
+    {
+      fuse_reply_err (req, ENOENT);
+      return;
+    }
+
+  switch (inode->type) {
+  case GLICK_INODE_TYPE_DIR:
+    fuse_reply_err (req, EISDIR);
+    break;
+  case GLICK_INODE_TYPE_SOCKET:
+  case GLICK_INODE_TYPE_TRANSIENT_SYMLINK:
+    fuse_reply_err (req, EACCES);
+    break;
+  case GLICK_INODE_TYPE_TRANSIENT_FILE:
+    {
+      GlickInodeTransient *transient = (GlickInodeTransient *)inode;
+
+      open = g_new0 (GlickOpenFile, 1);
+      open->start = 0;
+      open->end = -1;
+      open->flags = fi->flags;
+      open->fd = dup (transient->fd);
+      fi->fh = (guint64)open;
+      fuse_reply_open (req, fi);
+    }
+    break;
+  case GLICK_INODE_TYPE_SLICE_FILE:
+    {
+      GlickInodeSliceFile *file = (GlickInodeSliceFile *)inode;
+      if (S_ISREG (inode->mode))
+	{
+	  if ((fi->flags & 3) != O_RDONLY)
+	    {
+	      fuse_reply_err (req, EACCES);
+	      return;
+	    }
+
+	  open = g_new0 (GlickOpenFile, 1);
+	  open->fd = dup (file->slice->fd);
+	  open->start = file->slice->data_offset + GUINT64_FROM_LE (file->slice_inode->offset);
+	  open->end = open->start + GUINT64_FROM_LE (file->slice_inode->size);
+	  open->flags = fi->flags;
+	  fi->fh = (guint64)open;
+	  fuse_reply_open (req, fi);
+	}
+      else
+	fuse_reply_err (req, EACCES);
+    }
+    break;
+  }
+}
+
+static void
+glick_fs_release (fuse_req_t req, fuse_ino_t ino,
+		  struct fuse_file_info *fi)
+{
+  GlickOpenFile *open = (GlickOpenFile *) fi->fh;
+
+  __debug__ (("glick_fs_release\n"));
+
+  close (open->fd);
+  g_free (open);
+  fuse_reply_err (req, 0);
+}
+
+typedef struct {
+  GlickThreadOp base;
+  fuse_req_t req;
+  GlickOpenFile *open;
+  gssize res;
+  guint64 start;
+  guint64 size;
+  char *buf;
+  int errsv;
+} GlickThreadOpRead;
+
+static void
+read_op_reply (GlickThreadOp *op)
+{
+  GlickThreadOpRead *read = (GlickThreadOpRead *)op;
+
+  if (read->res >= 0)
+    fuse_reply_buf (read->req, read->buf, read->res);
+  else
+    fuse_reply_err (read->req, read->errsv);
+
+  free (read->buf);
+}
+
+static void
+read_op_thread (GlickThreadOp *op)
+{
+  GlickThreadOpRead *read = (GlickThreadOpRead *)op;
+
+  read->res = pread (read->open->fd, read->buf, read->size, read->start);
+  read->errsv = errno;
+}
+
+static void
+glick_fs_read (fuse_req_t req, fuse_ino_t ino, gsize size,
+	       off_t off, struct fuse_file_info *fi)
+{
+  GlickOpenFile *open;
+  guint64 start, end;
+  GlickThreadOpRead *op;
+
+  __debug__ (("glick_fs_read\n"));
+
+  open = (GlickOpenFile *)fi->fh;
+  if (open->flags & O_WRONLY)
+    {
+      fuse_reply_err (req, EBADF);
+      return;
+    }
+
+  start = open->start + off;
+  if (open->end != -1)
+    {
+      end = start + size;
+      start = MIN (start, open->end);
+      end = MIN (end, open->end);
+      size = end - start;
+    }
+
+  op = g_new0 (GlickThreadOpRead, 1);
+  op->req = req;
+  op->open = open;
+  op->buf = malloc (size);
+  op->size = size;
+  op->start = start;
+
+  glick_thread_push ((GlickThreadOp *)op,
+		     read_op_thread,
+		     read_op_reply);
+}
 
 
+static void
+glick_fs_write (fuse_req_t req, fuse_ino_t ino, const char *buf,
+		size_t size, off_t off, struct fuse_file_info *fi)
+{
+  gssize res;
+  GlickOpenFile *open;
 
+  __debug__ (("glick_fs_write\n"));
 
+  open = (GlickOpenFile *)fi->fh;
+
+  if (open->flags & O_RDONLY)
+    {
+      fuse_reply_err (req, EBADF);
+      return;
+    }
+
+  /* This assumes open->start is 0 and open->end == -1, which
+     should be true as these are only used for readonly files */
+
+  /* TODO: Write in thread */
+
+  res = pwrite (open->fd, buf, size, off);
+  if (res >= 0)
+    fuse_reply_write (req, res);
+  else
+    fuse_reply_err (req, errno);
+}
 
 /******************** End of fuse implementation ********************/
 
@@ -1916,90 +2088,6 @@ old_glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 }
 
 static void
-old_glick_fs_release (fuse_req_t req, fuse_ino_t ino,
-		  struct fuse_file_info *fi)
-{
-  GlickOpenFile *open = (GlickOpenFile *) fi->fh;
-
-  __debug__ (("glick_fs_release\n"));
-
-  close (open->fd);
-  g_free (open);
-  fuse_reply_err (req, 0);
-}
-
-typedef struct {
-  GlickThreadOp base;
-  fuse_req_t req;
-  GlickOpenFile *open;
-  gssize res;
-  guint64 start;
-  guint64 size;
-  char *buf;
-  int errsv;
-} GlickThreadOpRead;
-
-static void
-read_op_reply (GlickThreadOp *op)
-{
-  GlickThreadOpRead *read = (GlickThreadOpRead *)op;
-
-  if (read->res >= 0)
-    fuse_reply_buf (read->req, read->buf, read->res);
-  else
-    fuse_reply_err (read->req, read->errsv);
-
-  free (read->buf);
-}
-
-static void
-read_op_thread (GlickThreadOp *op)
-{
-  GlickThreadOpRead *read = (GlickThreadOpRead *)op;
-
-  read->res = pread (read->open->fd, read->buf, read->size, read->start);
-  read->errsv = errno;
-}
-
-static void
-old_glick_fs_read (fuse_req_t req, fuse_ino_t ino, gsize size,
-	       off_t off, struct fuse_file_info *fi)
-{
-  GlickOpenFile *open;
-  guint64 start, end;
-  GlickThreadOpRead *op;
-
-  __debug__ (("glick_fs_read\n"));
-
-  open = (GlickOpenFile *)fi->fh;
-  if (open->flags & O_WRONLY)
-    {
-      fuse_reply_err (req, EBADF);
-      return;
-    }
-
-  start = open->start + off;
-  if (open->end != -1)
-    {
-      end = start + size;
-      start = MIN (start, open->end);
-      end = MIN (end, open->end);
-      size = end - start;
-    }
-
-  op = g_new0 (GlickThreadOpRead, 1);
-  op->req = req;
-  op->open = open;
-  op->buf = malloc (size);
-  op->size = size;
-  op->start = start;
-
-  glick_thread_push ((GlickThreadOp *)op,
-		     read_op_thread,
-		     read_op_reply);
-}
-
-static void
 old_glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 		  int to_set, struct fuse_file_info *fi)
 {
@@ -2061,34 +2149,6 @@ old_glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
   glick_mount_transient_file_stat (file, &res_stat);
   __debug__ (("replying with access\n"));
   fuse_reply_attr (req, &res_stat, ATTR_CACHE_TIMEOUT_SEC);
-}
-
-
-static void
-old_glick_fs_write (fuse_req_t req, fuse_ino_t ino, const char *buf,
-		size_t size, off_t off, struct fuse_file_info *fi)
-{
-  gssize res;
-  GlickOpenFile *open;
-
-  __debug__ (("glick_fs_write\n"));
-
-  open = (GlickOpenFile *)fi->fh;
-
-  if (open->flags & O_RDONLY)
-    {
-      fuse_reply_err (req, EBADF);
-      return;
-    }
-
-  /* This assumes open->start is 0 and open->end == -1, which
-     should be true as these are only used for readonly files */
-
-  res = pwrite (open->fd, buf, size, off);
-  if (res >= 0)
-    fuse_reply_write (req, res);
-  else
-    fuse_reply_err (req, errno);
 }
 
 static GlickMountTransientFile *
@@ -2502,11 +2562,11 @@ fuse_lowlevel_ops glick_fs_oper = {
   .rmdir	= glick_fs_rmdir,
   .symlink	= glick_fs_symlink,
   .readlink	= glick_fs_readlink,
-  /*
   .open		= glick_fs_open,
   .release	= glick_fs_release,
   .read		= glick_fs_read,
   .write	= glick_fs_write,
+  /*
   .setattr	= glick_fs_setattr,
   */
 };
