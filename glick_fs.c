@@ -375,8 +375,18 @@ glick_inode_dir_add_child (GlickInodeDir *dir, const char *name, GlickInode *chi
 static void
 glick_inode_dir_remove_child (GlickInodeDir *dir, const char *name)
 {
-  g_assert (g_hash_table_lookup (dir->known_children, name) != NULL);
+  GlickInode *child;
+
+  child = g_hash_table_lookup (dir->known_children, name);
+  g_assert (child != NULL);
   g_hash_table_remove (dir->known_children, name);
+
+  if (child->kernel_ref_count > 0)
+    {
+      struct fuse_chan *ch = fuse_session_next_chan (glick_fuse_session, NULL);
+
+      fuse_lowlevel_notify_inval_entry (ch, dir->base.fuse_inode, name, strlen (name));
+    }
 }
 
 static gboolean
