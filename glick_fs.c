@@ -23,7 +23,6 @@
  * Add support for mtime/ctime/atime
  * Add bloom table for hash lookups
  * Support sha1-based merging
- * Support inotify for removed exported files
  * Support renames of transient files
  * Support access()
  * Support triggers
@@ -34,7 +33,8 @@
 typedef enum {
   GLICK_INODE_FLAGS_NONE = 0,
   GLICK_INODE_FLAGS_OWNED = 1 << 0,
-  GLICK_INODE_FLAGS_HIDDEN = 1 << 1
+  GLICK_INODE_FLAGS_HIDDEN = 1 << 1,
+  GLICK_INODE_FLAGS_REMOVABLE = 1 << 2
 } GlickInodeFlags;
 
 typedef enum {
@@ -214,6 +214,7 @@ GlickSlice *glick_slice_ref (GlickSlice *slice);
 static void glick_inode_dir_remove_stale_children (GlickInodeDir *dir);
 static void glick_inode_dir_remove_all_children (GlickInodeDir *dir);
 static gboolean glick_inode_is_owned (GlickInode *inode);
+void glick_mount_real_remove_slice (GlickMount *mount, GlickSlice *slice);
 
 #if 1
 #define __debug__(x) g_print x
@@ -503,6 +504,21 @@ static void
 glick_inode_unhide (GlickInode *inode)
 {
   glick_inode_unset_flags (inode, GLICK_INODE_FLAGS_HIDDEN);
+}
+
+static gboolean
+glick_inode_is_removable (GlickInode *inode)
+{
+  return (inode->flags & GLICK_INODE_FLAGS_REMOVABLE) != 0;
+}
+
+static void
+glick_inode_set_removable (GlickInode *inode, gboolean removable)
+{
+  if (removable)
+    glick_inode_set_flags (inode, GLICK_INODE_FLAGS_REMOVABLE);
+  else
+    glick_inode_unset_flags (inode, GLICK_INODE_FLAGS_REMOVABLE);
 }
 
 static GlickInodeDir *
@@ -1057,7 +1073,8 @@ glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
 
   child_dir = (GlickInodeDir *)child;
   if (child_dir->mount &&
-      glick_mount_lookup_path (child_dir->mount, child_dir->mount_path, NULL, NULL) != NULL)
+      glick_mount_lookup_path (child_dir->mount, child_dir->mount_path, NULL, NULL) != NULL &&
+      !glick_inode_is_removable (child))
     {
       fuse_reply_err (req, EACCES);
       return;
@@ -1108,7 +1125,8 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
     }
 
   if (child->type != GLICK_INODE_TYPE_TRANSIENT_FILE &&
-      child->type != GLICK_INODE_TYPE_TRANSIENT_SYMLINK)
+      child->type != GLICK_INODE_TYPE_TRANSIENT_SYMLINK &&
+      !glick_inode_is_removable (child))
     {
       fuse_reply_err (req, EACCES);
       return;
@@ -1815,6 +1833,8 @@ glick_mount_unref (GlickMount *mount)
   mount->ref_count--;
   if (mount->ref_count == 0)
     {
+      mount->mounted = FALSE;
+
       for (l = glick_publics; l != NULL; l = l->next)
 	{
 	  GlickPublic *public = l->data;
@@ -2013,26 +2033,24 @@ glick_mount_new_for_bundle (int fd)
 
 typedef struct {
   char *path;
-  GlickInode *hidden_inode;
-} AddedFile;
+  GlickInode *inode;
+} ChangedFile;
 
 static void
-collect_inotify_paths_cb (GlickInodeDir *dir,
-			  GlickInode *inode,
-			  const char *name,
-			  gpointer user_data)
+collect_added_paths_cb (GlickInodeDir *dir,
+			GlickInode *inode,
+			const char *name,
+			gpointer user_data)
 {
   GList **added_files = user_data;
 
-  g_print ("Collect inotify paths cb %s %s\n", dir->mount_path, name);
-
   if (S_ISREG (inode->mode) || S_ISDIR (inode->mode) )
     {
-      AddedFile *f = g_new0 (AddedFile, 1);
+      ChangedFile *f = g_new0 (ChangedFile, 1);
 
       f->path =
 	g_build_filename (glick_mountpoint, dir->mount->name, dir->mount_path, name, NULL);
-      f->hidden_inode = glick_inode_ref (inode);
+      f->inode = glick_inode_ref (inode);
       glick_inode_hide (inode);
 
       *added_files = g_list_prepend (*added_files, f);
@@ -2040,14 +2058,12 @@ collect_inotify_paths_cb (GlickInodeDir *dir,
 }
 
 static void
-collect_inotify_paths (GlickInodeDir *dir,
-		       GlickSlice *slice,
-		       GList **added_files)
+collect_added_paths (GlickInodeDir *dir,
+		     GlickSlice *slice,
+		     GList **added_files)
 {
   GHashTableIter iter;
   gpointer key, value;
-
-  g_print ("Collect inotify paths %s\n", dir->mount_path);
 
   g_hash_table_iter_init (&iter, dir->known_children);
   while (g_hash_table_iter_next (&iter, &key, &value))
@@ -2055,18 +2071,65 @@ collect_inotify_paths (GlickInodeDir *dir,
       GlickInode *child = value;
 
       if (child->type == GLICK_INODE_TYPE_DIR)
-	collect_inotify_paths ((GlickInodeDir *)child, slice, added_files);
+	collect_added_paths ((GlickInodeDir *)child, slice, added_files);
     }
 
   if (dir->base.kernel_ref_count > 0)
-    try_to_create_children_for_slice (dir, slice, collect_inotify_paths_cb, added_files);
+    try_to_create_children_for_slice (dir, slice, collect_added_paths_cb, added_files);
+}
+
+static void
+collect_removed_paths (GlickInodeDir *dir,
+		       GlickSlice *slice,
+		       GList **removed_files)
+{
+  GHashTableIter iter;
+  gpointer key, value;
+
+  if (dir->base.kernel_ref_count > 0)
+    try_to_create_children_for_slice (dir, slice, NULL, NULL);
+
+  g_hash_table_iter_init (&iter, dir->known_children);
+  while (g_hash_table_iter_next (&iter, &key, &value))
+    {
+      const char *name = key;
+      GlickInode *child = value;
+      guint32 path_hash;
+
+      if (dir->base.kernel_ref_count > 0)
+	{
+	  GlickSliceInode *inodep;
+	  char *path;
+
+	  path = g_build_filename (dir->mount_path, name, NULL);
+	  path_hash = djb_hash (path);
+	  inodep = glick_slice_lookup_path (slice, path, path_hash, NULL);
+	  g_free (path);
+	  if (inodep != NULL)
+	    {
+	      ChangedFile *f = g_new0 (ChangedFile, 1);
+
+	      f->path =
+		g_build_filename (glick_mountpoint, dir->mount->name, dir->mount_path, name, NULL);
+	      f->inode = glick_inode_ref (child);
+	      glick_inode_set_removable (child, TRUE);
+
+	      *removed_files = g_list_prepend (*removed_files, f);
+	    }
+	}
+
+      if (child->type == GLICK_INODE_TYPE_DIR)
+	collect_removed_paths ((GlickInodeDir *)child, slice, removed_files);
+    }
+
 }
 
 typedef struct {
   GlickThreadOp base;
-  GList *added_files;
-  int num_added_files;
+  gboolean remove;
+  GList *changed_files;
   GlickMount *mount;
+  GlickSlice *slice;
 } GlickThreadOpChanges;
 
 static void
@@ -2075,17 +2138,22 @@ changes_op_result (GlickThreadOp *op)
   GlickThreadOpChanges *changes = (GlickThreadOpChanges *)op;
   GList *l;
 
-  for (l = changes->added_files; l != NULL; l = l->next)
+  for (l = changes->changed_files; l != NULL; l = l->next)
     {
-      AddedFile *added_file = l->data;
-      g_free (added_file->path);
-      glick_inode_unhide (added_file->hidden_inode);
-      glick_inode_unref (added_file->hidden_inode);
-      g_free (added_file);
+      ChangedFile *changed_file = l->data;
+      g_free (changed_file->path);
+      glick_inode_unhide (changed_file->inode);
+      glick_inode_unref (changed_file->inode);
+      g_free (changed_file);
     }
 
-  g_list_free (changes->added_files);
+  g_list_free (changes->changed_files);
+
+  if (changes->remove)
+    glick_mount_real_remove_slice (changes->mount, changes->slice);
+
   glick_mount_unref (changes->mount);
+  glick_slice_unref (changes->slice);
 }
 
 
@@ -2095,20 +2163,34 @@ changes_op_thread (GlickThreadOp *op)
   GlickThreadOpChanges *changes = (GlickThreadOpChanges *)op;
   GList *l;
 
-  for (l = changes->added_files; l != NULL; l = l->next)
+  for (l = changes->changed_files; l != NULL; l = l->next)
     {
-      AddedFile *added_file = l->data;
-      if (S_ISDIR (added_file->hidden_inode->mode))
+      ChangedFile *changed_file = l->data;
+      if (changes->remove)
 	{
-	  g_print ("mkdir %s\n", added_file->path);
-	  if (mkdir (added_file->path, 0755) == -1)
-	    perror ("mkdir");
+	  if (S_ISDIR (changed_file->inode->mode))
+	    {
+	      if (rmdir (changed_file->path) == -1)
+		perror ("inotify rmdir");
+	    }
+	  else
+	    {
+	      if (unlink (changed_file->path) == -1)
+		perror ("inotify unlink");
+	    }
 	}
       else
 	{
-	  g_print ("mknode %s\n", added_file->path);
-	  if (mknod (added_file->path, S_IFREG | 0755, 0) == -1)
-	    perror ("mknod");
+	  if (S_ISDIR (changed_file->inode->mode))
+	    {
+	      if (mkdir (changed_file->path, 0755) == -1)
+		perror ("inotify mkdir");
+	    }
+	  else
+	    {
+	      if (mknod (changed_file->path, S_IFREG | 0755, 0) == -1)
+		perror ("inotify mknod");
+	    }
 	}
     }
 }
@@ -2122,18 +2204,19 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
       (slice->flags & GLICK_SLICE_FLAGS_EXPORT))
     {
       GList *added_files = NULL;
-      collect_inotify_paths (mount->dir,
-			     slice,
-			     &added_files);
-      added_files = g_list_reverse (added_files);
+      collect_added_paths (mount->dir,
+			   slice,
+			   &added_files);
 
       if (added_files)
 	{
 	  GlickThreadOpChanges *op;
 
 	  op = g_new0 (GlickThreadOpChanges, 1);
-	  op->added_files = added_files;
+	  op->remove = FALSE;
+	  op->changed_files = added_files;
 	  op->mount = glick_mount_ref (mount);
+	  op->slice = glick_slice_ref (slice);
 
 	  glick_thread_push ((GlickThreadOp *)op,
 			     changes_op_thread,
@@ -2143,11 +2226,43 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
 }
 
 void
-glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice)
+glick_mount_real_remove_slice (GlickMount *mount, GlickSlice *slice)
 {
   mount->slices = g_list_remove (mount->slices, slice);
-
   glick_inode_dir_remove_stale_children (mount->dir);
+}
+
+void
+glick_mount_remove_slice (GlickMount *mount, GlickSlice *slice)
+{
+  if (mount->mounted &&
+      (slice->flags & GLICK_SLICE_FLAGS_EXPORT))
+    {
+      GList *removed_files = NULL;
+
+      collect_removed_paths (mount->dir,
+			     slice,
+			     &removed_files);
+
+      if (removed_files)
+	{
+	  GlickThreadOpChanges *op;
+
+	  op = g_new0 (GlickThreadOpChanges, 1);
+	  op->remove = TRUE;
+	  op->changed_files = removed_files;
+	  op->mount = glick_mount_ref (mount);
+	  op->slice = glick_slice_ref (slice);
+
+	  glick_thread_push ((GlickThreadOp *)op,
+			     changes_op_thread,
+			     changes_op_result);
+	}
+      else
+	glick_mount_real_remove_slice (mount, slice);
+    }
+  else
+    glick_mount_real_remove_slice (mount, slice);
 }
 
 GlickMountRef *
