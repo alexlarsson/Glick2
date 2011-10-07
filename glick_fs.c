@@ -26,6 +26,8 @@
  * Support access()
  * Do file writes in threads
  * Use sha1 at the file level
+ * use bup-style hashing for file parts
+ * debug why gnome-shell doesn't pick up removal of bundle desktop files
  */
 
 typedef enum {
