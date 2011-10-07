@@ -1183,15 +1183,15 @@ glick_fs_symlink (fuse_req_t req, const char *link, fuse_ino_t parent,
     }
   else
     {
-      GlickInodeSymlink *child;
-      child = glick_inode_new_symlink (link);
-      child->base.kernel_ref_count++;
-      glick_inode_dir_add_child (parent_inode, name, (GlickInode *)child);
-      glick_inode_own ((GlickInode *)child);
-      glick_inode_unref ((GlickInode *)child);
+      GlickInode *child;
+      child = (GlickInode *)glick_inode_new_symlink (link);
+      child->kernel_ref_count++;
+      glick_inode_dir_add_child (parent_inode, name, child);
+      glick_inode_own (child);
+      glick_inode_unref (child);
 
-      e.ino = child->base.fuse_inode;
-      glick_inode_stat (&child->base, &e.attr);
+      e.ino = child->fuse_inode;
+      glick_inode_stat (child, &e.attr);
       fuse_reply_entry (req, &e);
     }
 }
