@@ -34,7 +34,8 @@ typedef enum {
   GLICK_INODE_FLAGS_NONE = 0,
   GLICK_INODE_FLAGS_OWNED = 1 << 0,
   GLICK_INODE_FLAGS_HIDDEN = 1 << 1,
-  GLICK_INODE_FLAGS_REMOVABLE = 1 << 2
+  GLICK_INODE_FLAGS_REMOVABLE = 1 << 2,
+  GLICK_INODE_FLAGS_IMMUTABLE = 1 << 3
 } GlickInodeFlags;
 
 typedef enum {
@@ -529,6 +530,21 @@ glick_inode_set_removable (GlickInode *inode, gboolean removable)
     glick_inode_set_flags (inode, GLICK_INODE_FLAGS_REMOVABLE);
   else
     glick_inode_unset_flags (inode, GLICK_INODE_FLAGS_REMOVABLE);
+}
+
+static gboolean
+glick_inode_is_immutable (GlickInode *inode)
+{
+  return (inode->flags & GLICK_INODE_FLAGS_IMMUTABLE) != 0;
+}
+
+static void
+glick_inode_set_immutable (GlickInode *inode, gboolean immutable)
+{
+  if (immutable)
+    glick_inode_set_flags (inode, GLICK_INODE_FLAGS_IMMUTABLE);
+  else
+    glick_inode_unset_flags (inode, GLICK_INODE_FLAGS_IMMUTABLE);
 }
 
 static GlickInodeDir *
@@ -1082,9 +1098,10 @@ glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
     }
 
   child_dir = (GlickInodeDir *)child;
-  if (child_dir->mount &&
-      glick_mount_lookup_path (child_dir->mount, child_dir->mount_path, NULL, NULL) != NULL &&
-      !glick_inode_is_removable (child))
+  if ((child_dir->mount &&
+       glick_mount_lookup_path (child_dir->mount, child_dir->mount_path, NULL, NULL) != NULL &&
+       !glick_inode_is_removable (child)) ||
+      glick_inode_is_immutable (child))
     {
       fuse_reply_err (req, EACCES);
       return;
@@ -1134,9 +1151,10 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
       return;
     }
 
-  if (child->type != GLICK_INODE_TYPE_TRANSIENT_FILE &&
-      child->type != GLICK_INODE_TYPE_TRANSIENT_SYMLINK &&
-      !glick_inode_is_removable (child))
+  if ((child->type != GLICK_INODE_TYPE_TRANSIENT_FILE &&
+       child->type != GLICK_INODE_TYPE_TRANSIENT_SYMLINK &&
+       !glick_inode_is_removable (child)) ||
+      glick_inode_is_immutable (child))
     {
       fuse_reply_err (req, EACCES);
       return;
@@ -1893,6 +1911,7 @@ glick_mount_new (const char *name)
   mount->dir = glick_inode_new_dir ();
   glick_inode_dir_add_child (glick_root, mount->name, (GlickInode *)mount->dir);
   glick_inode_own ((GlickInode *)mount->dir);
+  glick_inode_set_immutable ((GlickInode *)mount->dir, TRUE);
   mount->dir->mount = mount;
   mount->dir->mount_path = g_strdup ("/");
 
@@ -2827,10 +2846,12 @@ main (int argc, char *argv[])
   glick_root = glick_inode_new_dir ();
   glick_root->base.kernel_ref_count++;
   glick_inode_own ((GlickInode *)glick_root);
+  glick_inode_set_immutable ((GlickInode *)glick_root, TRUE);
 
   glick_bundles_dir = glick_inode_new_dir ();
   glick_inode_dir_add_child (glick_root, ".bundles", (GlickInode *)glick_bundles_dir);
   glick_inode_own ((GlickInode *)glick_bundles_dir);
+  glick_inode_set_immutable ((GlickInode *)glick_bundles_dir, TRUE);
 
   homedir = g_get_home_dir ();
   glick_mountpoint = g_build_filename (homedir, ".glick", NULL);
