@@ -374,7 +374,7 @@ glick_inode_dir_add_child (GlickInodeDir *dir, const char *name, GlickInode *chi
 }
 
 static void
-glick_inode_dir_remove_child (GlickInodeDir *dir, const char *name)
+glick_inode_dir_remove_child (GlickInodeDir *dir, const char *name, gboolean invalidate)
 {
   GlickInode *child;
 
@@ -382,7 +382,7 @@ glick_inode_dir_remove_child (GlickInodeDir *dir, const char *name)
   g_assert (child != NULL);
   g_hash_table_remove (dir->known_children, name);
 
-  if (child->kernel_ref_count > 0)
+  if (child->kernel_ref_count > 0 && invalidate)
     {
       struct fuse_chan *ch = fuse_session_next_chan (glick_fuse_session, NULL);
 
@@ -1113,7 +1113,7 @@ glick_fs_rmdir (fuse_req_t req, fuse_ino_t parent, const char *name)
       return;
     }
 
-  glick_inode_dir_remove_child (parent_inode, name);
+  glick_inode_dir_remove_child (parent_inode, name, FALSE);
 
   fuse_reply_err (req, 0);
 }
@@ -1160,7 +1160,7 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
       return;
     }
 
-  glick_inode_dir_remove_child (parent_inode, name);
+  glick_inode_dir_remove_child (parent_inode, name, FALSE);
   fuse_reply_err (req, 0);
 }
 
@@ -1877,7 +1877,7 @@ glick_mount_unref (GlickMount *mount)
 	}
 
       glick_inode_dir_remove_all_children (mount->dir);
-      glick_inode_dir_remove_child (glick_root, mount->name);
+      glick_inode_dir_remove_child (glick_root, mount->name, TRUE);
       glick_inode_unref ((GlickInode *)mount->dir);
 
       glick_mounts = g_list_remove (glick_mounts, mount);
@@ -2503,7 +2503,7 @@ glick_public_free (GlickPublic *public)
     }
   g_list_free (public->slices);
 
-  glick_inode_dir_remove_child (glick_bundles_dir, public->bundle_id);
+  glick_inode_dir_remove_child (glick_bundles_dir, public->bundle_id, TRUE);
 
   g_free (public->filename);
   g_free (public->bundle_id);
