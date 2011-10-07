@@ -1946,7 +1946,8 @@ glick_slice_get_inode (GlickSlice *slice, int local)
 }
 
 GlickSliceInode *
-glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, guint32 *inode_num)
+glick_mount_lookup_path_except_slice (GlickMount *mount, const char *path, GlickSlice *except_slice,
+				      GlickSlice **slice_out, guint32 *inode_num)
 {
   GList *l;
   guint32 path_hash;
@@ -1958,6 +1959,9 @@ glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice
       GlickSlice *slice = l->data;
       GlickSliceInode *inode;
 
+      if (slice == except_slice)
+	continue;
+
       inode = glick_slice_lookup_path (slice, path, path_hash, inode_num);
       if (inode != NULL)
 	{
@@ -1967,6 +1971,13 @@ glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice
 	}
     }
   return NULL;
+}
+
+GlickSliceInode *
+glick_mount_lookup_path (GlickMount *mount, const char *path, GlickSlice **slice_out, guint32 *inode_num)
+{
+  return glick_mount_lookup_path_except_slice (mount, path, NULL, slice_out, inode_num);
+
 }
 
 GlickMount *
@@ -2235,14 +2246,16 @@ collect_removed_paths (GlickInodeDir *dir,
 
       if (dir->base.kernel_ref_count > 0)
 	{
-	  GlickSliceInode *inodep;
+	  GlickSliceInode *inodep, *inodep_mount;
 	  char *path;
 
 	  path = g_build_filename (dir->mount_path, name, NULL);
 	  path_hash = djb_hash (path);
 	  inodep = glick_slice_lookup_path (slice, path, path_hash, NULL);
+	  inodep_mount = glick_mount_lookup_path_except_slice (dir->mount, path, slice, NULL, NULL);
 	  g_free (path);
-	  if (inodep != NULL)
+	  /* TODO: Also check for non-slice (grand)children of a directory => don't remove */
+	  if (inodep != NULL && inodep_mount == NULL)
 	    {
 	      ChangedFile *f = g_new0 (ChangedFile, 1);
 
