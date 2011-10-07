@@ -23,7 +23,6 @@
  * Add support for mtime/ctime/atime
  * Add bloom table for hash lookups
  * Support sha1-based merging
- * Support renames of transient files
  * Support access()
  * Support triggers
  * Do file writes in threads
@@ -834,13 +833,22 @@ find_dir_inode_for_op (fuse_req_t req, fuse_ino_t ino)
 }
 
 static GlickInode *
-find_existing_child_inode_for_op (fuse_req_t req, GlickInodeDir *parent_inode, const char *name)
+lookup_or_create_child_inode (GlickInodeDir *parent_inode, const char *name)
 {
   GlickInode *child_inode;
 
   child_inode = g_hash_table_lookup (parent_inode->known_children, name);
   if (child_inode == NULL)
       child_inode = try_to_create_child (parent_inode, name);
+  return child_inode;
+}
+
+static GlickInode *
+find_existing_child_inode_for_op (fuse_req_t req, GlickInodeDir *parent_inode, const char *name)
+{
+  GlickInode *child_inode;
+
+  child_inode = lookup_or_create_child_inode (parent_inode, name);
   if (child_inode == NULL ||
       glick_inode_is_hidden (child_inode))
     {
@@ -857,9 +865,7 @@ ensure_no_existing_child_for_op (fuse_req_t req, GlickInodeDir *parent_inode, co
 {
   GlickInode *child_inode;
 
-  child_inode = g_hash_table_lookup (parent_inode->known_children, name);
-  if (child_inode == NULL)
-    child_inode = try_to_create_child (parent_inode, name);
+  child_inode = lookup_or_create_child_inode (parent_inode, name);
   if (child_inode != NULL &&
       (hidden_inode == NULL || !glick_inode_is_hidden (child_inode)))
     {
@@ -1011,6 +1017,7 @@ glick_fs_mknod (fuse_req_t req, fuse_ino_t parent, const char *name,
 	    }
 	  else
 	    {
+	      transient->base.kernel_ref_count++;
 	      glick_inode_dir_add_child (parent_inode, name, (GlickInode *)transient);
 	      glick_inode_own ((GlickInode *)transient);
 	      glick_inode_unref ((GlickInode *)transient);
@@ -1160,6 +1167,92 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
       return;
     }
 
+  glick_inode_dir_remove_child (parent_inode, name, FALSE);
+  fuse_reply_err (req, 0);
+}
+
+static void
+glick_fs_rename (fuse_req_t req, fuse_ino_t parent, const char *name,
+		 fuse_ino_t newparent, const char *newname)
+{
+  GlickInodeDir *parent_inode, *new_parent_inode;
+  GlickInode *child, *existing_child;
+  char *path;
+  GlickSliceInode *inodep;
+
+  parent_inode = find_dir_inode_for_op (req, parent);
+  if (parent_inode == NULL)
+    return;
+
+  child = find_existing_child_inode_for_op (req, parent_inode, name);
+  if (child == NULL)
+    return;
+
+  if (glick_inode_is_immutable (child) ||
+      !glick_inode_is_owned (child))
+    {
+      fuse_reply_err (req, EACCES);
+      return;
+    }
+
+  if (parent_inode->mount != NULL)
+    {
+      path = g_build_filename (parent_inode->mount_path, name, NULL);
+      inodep = glick_mount_lookup_path (parent_inode->mount, path, NULL, NULL);
+      g_free (path);
+      if (inodep != NULL)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+    }
+
+  new_parent_inode = find_dir_inode_for_op (req, newparent);
+  if (new_parent_inode == NULL)
+    return;
+
+  if (new_parent_inode->mount != NULL)
+    {
+      path = g_build_filename (new_parent_inode->mount_path, newname, NULL);
+      inodep = glick_mount_lookup_path (new_parent_inode->mount, path, NULL, NULL);
+      g_free (path);
+      if (inodep != NULL)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+    }
+
+  existing_child = lookup_or_create_child_inode (new_parent_inode, newname);
+  if (existing_child != NULL)
+    {
+      if (glick_inode_is_immutable (existing_child) ||
+	  !glick_inode_is_owned (existing_child))
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+
+      if (existing_child->type == GLICK_INODE_TYPE_DIR)
+	{
+	  GlickInodeDir *existing_dir = (GlickInodeDir *)existing_child;
+
+	  if (child->type != GLICK_INODE_TYPE_DIR)
+	    {
+	      fuse_reply_err (req, EISDIR);
+	      return;
+	    }
+
+	  if (g_hash_table_size (existing_dir->known_children) > 0)
+	    {
+	      fuse_reply_err (req, ENOTDIR);
+	      return;
+	    }
+	}
+
+      glick_inode_dir_remove_child (new_parent_inode, newname, FALSE);
+    }
+  glick_inode_dir_add_child (new_parent_inode, newname, child);
   glick_inode_dir_remove_child (parent_inode, name, FALSE);
   fuse_reply_err (req, 0);
 }
@@ -1561,6 +1654,7 @@ fuse_lowlevel_ops glick_fs_oper = {
   .mknod	= glick_fs_mknod,
   .mkdir	= glick_fs_mkdir,
   .unlink	= glick_fs_unlink,
+  .rename	= glick_fs_rename,
   .rmdir	= glick_fs_rmdir,
   .symlink	= glick_fs_symlink,
   .readlink	= glick_fs_readlink,
