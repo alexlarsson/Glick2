@@ -2008,7 +2008,7 @@ glick_mount_new_public (void)
 {
   GlickMount *mount;
 
-  mount = glick_mount_new ("public");
+  mount = glick_mount_new ("exports");
   if (mount == NULL)
     return NULL;
 
