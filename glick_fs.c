@@ -2420,6 +2420,7 @@ glick_public_new (char *filename)
   GList *l;
   GlickPublic *public;
   struct stat statbuf;
+  GlickInode *symlink;
 
   int fd = open (filename, O_RDONLY);
   if (fd == -1)
@@ -2472,6 +2473,12 @@ glick_public_new (char *filename)
       glick_public_apply_to_mount (public, mount);
     }
 
+  symlink = (GlickInode *)glick_inode_new_symlink (filename);
+  glick_inode_dir_add_child (glick_bundles_dir, public->bundle_id, symlink);
+  glick_inode_own (symlink);
+  glick_inode_set_immutable (symlink, TRUE);
+  glick_inode_unref (symlink);
+
   return public;
 }
 
@@ -2495,6 +2502,8 @@ glick_public_free (GlickPublic *public)
       glick_slice_unref (slice);
     }
   g_list_free (public->slices);
+
+  glick_inode_dir_remove_child (glick_bundles_dir, public->bundle_id);
 
   g_free (public->filename);
   g_free (public->bundle_id);
