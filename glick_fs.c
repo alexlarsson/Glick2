@@ -24,7 +24,6 @@
  * Add bloom table for hash lookups
  * Support sha1-based merging
  * Support access()
- * Support triggers
  * Do file writes in threads
  * Use sha1 at the file level
  */
@@ -74,6 +73,19 @@ typedef struct {
   guint32 num_dirs;
 } GlickSlice;
 
+typedef enum {
+  GLICK_TRIGGER_FLAGS_NONE = 0,
+  GLICK_TRIGGER_FLAGS_CREATE_DIRECTORY = 1 << 1,
+  GLICK_TRIGGER_FLAGS_BUMP_DIR_MTIME = 1 << 2,
+} GlickTriggerFlags;
+
+typedef struct {
+  char *directory;
+  char *cmdline;
+  guint32 flags;
+  guint tag;
+} GlickTrigger;
+
 typedef struct {
   char *name;
   int ref_count;
@@ -84,6 +96,7 @@ typedef struct {
 
   GlickInodeDir *dir;
   GList *slices;
+  GList *triggers;
 } GlickMount;
 
 typedef struct {
@@ -191,6 +204,19 @@ static unsigned long fuse_generation = 1;
 static int master_socket_ready_pipe = 0;
 static int master_socket;
 static GMainLoop *mainloop;
+
+static GlickTrigger builtin_public_triggers[] = {
+  {
+    "/share/icons/hicolor",
+    "gtk-update-icon-cache -t %d",
+    GLICK_TRIGGER_FLAGS_BUMP_DIR_MTIME | GLICK_TRIGGER_FLAGS_CREATE_DIRECTORY,
+  },
+  {
+    "/share/applications",
+    "update-desktop-database %d",
+    GLICK_TRIGGER_FLAGS_CREATE_DIRECTORY,
+  }
+};
 
 const char *glick_slice_lookup_string (GlickSlice *slice, size_t offset);
 GlickSliceInode * glick_slice_lookup_path (GlickSlice *slice, const char *path, guint32 path_hash, guint32 *inode_num);
@@ -2043,16 +2069,77 @@ glick_mount_new (const char *name)
   return mount;
 }
 
+gboolean
+glick_mount_create_dirs (GlickMount *mount, const char *path)
+{
+  gchar **elements;
+  GlickInodeDir *dir;
+  int i;
+
+  if (*path != '/')
+    return FALSE;
+  path++;
+
+  elements = g_strsplit (path, "/", -1);
+  dir = mount->dir;
+
+  for (i = 0; elements[i] != NULL; i++)
+    {
+      GlickInode *child;
+      GlickInodeDir *child_dir;
+
+      child = lookup_or_create_child_inode (dir, elements[i]);
+      if (child == NULL)
+	{
+	  child_dir = glick_inode_new_dir ();
+	  glick_inode_dir_add_child (dir, elements[i], (GlickInode *)child_dir);
+	  glick_inode_own ((GlickInode *)child_dir);
+	  glick_inode_unref ((GlickInode *)child_dir);
+	}
+      else
+	{
+	  if (child->type != GLICK_INODE_TYPE_DIR)
+	    {
+	      g_strfreev (elements);
+	      return FALSE;
+	    }
+	  child_dir = (GlickInodeDir *)child;
+	}
+
+      dir = child_dir;
+    }
+
+  g_strfreev (elements);
+
+  return TRUE;
+}
+
 GlickMount *
 glick_mount_new_public (void)
 {
   GlickMount *mount;
+  GList *l;
+  int i;
 
   mount = glick_mount_new ("exports");
   if (mount == NULL)
     return NULL;
 
   mount->mounted = TRUE;
+
+  for (i = 0; i < G_N_ELEMENTS (builtin_public_triggers); i++)
+    mount->triggers = g_list_prepend (mount->triggers, &builtin_public_triggers[i]);
+
+  for (l = mount->triggers; l != NULL; l = l->next)
+    {
+      GlickTrigger *trigger = l->data;
+
+      if (trigger->flags & GLICK_TRIGGER_FLAGS_CREATE_DIRECTORY)
+	{
+	  if (!glick_mount_create_dirs (mount, trigger->directory))
+	    g_warning ("can't create trigger directory %s\n", trigger->directory);
+	}
+    }
 
   return mount;
 }
@@ -2180,6 +2267,86 @@ glick_mount_new_for_bundle (int fd)
 }
 
 typedef struct {
+  GlickMount *mount;
+  GlickTrigger *trigger;
+} TriggerHit;
+
+static gboolean
+slice_changed_cb (gpointer user_data)
+{
+  TriggerHit *hit = user_data;
+  GlickMount *mount = hit->mount;
+  GlickTrigger *trigger = hit->trigger;
+  const char *c;
+  char *path;
+  GString *str;
+
+  trigger->tag = 0;
+
+  str = g_string_new ("");
+  c = trigger->cmdline;
+  while (*c != 0)
+    {
+      if (*c == '%' && *(c+1) != 0)
+	{
+	  c++;
+	  switch (*c)
+	    {
+	    case '%':
+	      g_string_append_c (str, *c);
+	      break;
+	    case 'd':
+	      path = g_build_filename (glick_mountpoint, mount->name, trigger->directory, NULL);
+	      g_string_append (str, path);
+	      g_free (path);
+	      break;
+	    }
+	}
+      else
+	g_string_append_c (str, *c);
+      c++;
+    }
+
+  g_spawn_command_line_async (str->str, NULL);
+  if (trigger->flags & GLICK_TRIGGER_FLAGS_BUMP_DIR_MTIME)
+    {
+      /* TODO: Bump dir inode mtime and invalidate attrs */
+    }
+  g_string_free (str, TRUE);
+
+  return FALSE;
+}
+
+static void
+glick_mount_slice_changed (GlickMount *mount, GlickSlice *slice)
+{
+  GlickSliceInode *inode;
+  GList *l;
+
+  for (l = mount->triggers; l != NULL; l = l->next)
+    {
+      GlickTrigger *trigger = l->data;
+      guint32 path_hash;
+
+      /* Skip if already queued */
+      if (trigger->tag != 0)
+	continue;
+
+      path_hash = djb_hash (trigger->directory);
+      inode = glick_slice_lookup_path (slice, trigger->directory, path_hash, NULL);
+      if (inode != NULL)
+	{
+	  TriggerHit *hit = g_new0 (TriggerHit, 1);
+	  hit->mount = mount;
+	  hit->trigger = trigger;
+	  trigger->tag = g_idle_add_full (G_PRIORITY_DEFAULT, slice_changed_cb, hit, (GDestroyNotify)g_free);
+
+	}
+    }
+}
+
+
+typedef struct {
   char *path;
   GlickInode *inode;
 } ChangedFile;
@@ -2302,6 +2469,8 @@ changes_op_result (GlickThreadOp *op)
   if (changes->remove)
     glick_mount_real_remove_slice (changes->mount, changes->slice);
 
+  glick_mount_slice_changed (changes->mount, changes->slice);
+
   glick_mount_unref (changes->mount);
   glick_slice_unref (changes->slice);
 }
@@ -2372,7 +2541,11 @@ glick_mount_add_slice (GlickMount *mount, GlickSlice *slice)
 			     changes_op_thread,
 			     changes_op_result);
 	}
+      else
+	glick_mount_slice_changed (mount, slice);
     }
+  else
+    glick_mount_slice_changed (mount, slice);
 }
 
 void
@@ -2380,6 +2553,7 @@ glick_mount_real_remove_slice (GlickMount *mount, GlickSlice *slice)
 {
   mount->slices = g_list_remove (mount->slices, slice);
   glick_inode_dir_remove_stale_children (mount->dir);
+  glick_mount_slice_changed (mount, slice);
 }
 
 void
