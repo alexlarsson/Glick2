@@ -20,7 +20,7 @@
 #include "format.h"
 
 /* TODO:
- * Add support for mtime/ctime/atime
+ * Add support for mtime/ctime/atime in slices
  * Add bloom table for hash lookups
  * Support sha1-based merging
  * Support access()
@@ -291,11 +291,17 @@ static GlickInode *
 glick_inode_new (guint32 type)
 {
   GlickInodeAll *all;
+  time_t now;
 
   all = g_slice_new0 (GlickInodeAll);
   all->base.type = type;
   all->base.ref_count = 1;
   all->base.fuse_inode = glick_inode_counter++;
+
+  now = time(NULL);
+  all->base.atime = now;
+  all->base.ctime = now;
+  all->base.mtime = now;
 
   g_hash_table_insert (glick_inodes, GINT_TO_POINTER (all->base.fuse_inode), all);
 
@@ -1600,6 +1606,7 @@ glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
   GlickInode *inode;
   GlickInodeTransient *transient;
   struct stat res_stat;
+  time_t now;
   int res;
 
   __debug__ (("glick_fs_setattr %x to_set: %x\n", (int)ino, to_set));
@@ -1611,16 +1618,14 @@ glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
       return;
     }
 
-  switch (inode->type != GLICK_INODE_TYPE_TRANSIENT_FILE)
+  if (to_set & FUSE_SET_ATTR_SIZE)
     {
-      fuse_reply_err (req, EACCES);
-      return;
-    }
-
-  transient = (GlickInodeTransient *)inode;
-
-  if (to_set == FUSE_SET_ATTR_SIZE)
-    {
+      switch (inode->type != GLICK_INODE_TYPE_TRANSIENT_FILE)
+	{
+	  fuse_reply_err (req, EACCES);
+	  return;
+	}
+      transient = (GlickInodeTransient *)inode;
 
       res = ftruncate (transient->fd, attr->st_size);
       if (res != 0)
@@ -1630,8 +1635,32 @@ glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 	  fuse_reply_err (req, errsv);
 	  return;
 	}
+      to_set &= ~FUSE_SET_ATTR_SIZE;
     }
-  else
+
+  now = 0;
+  if (to_set & (FUSE_SET_ATTR_ATIME_NOW | FUSE_SET_ATTR_MTIME_NOW))
+    now = time(NULL);
+
+  if (to_set & FUSE_SET_ATTR_ATIME)
+    {
+      if (to_set & FUSE_SET_ATTR_ATIME_NOW)
+	inode->atime = now;
+      else
+	inode->atime = attr->st_atime;
+      to_set &= ~(FUSE_SET_ATTR_ATIME|FUSE_SET_ATTR_ATIME_NOW);
+    }
+
+  if (to_set & FUSE_SET_ATTR_MTIME)
+    {
+      if (to_set & FUSE_SET_ATTR_MTIME_NOW)
+	inode->mtime = now;
+      else
+	inode->mtime = attr->st_mtime;
+      to_set &= ~(FUSE_SET_ATTR_MTIME|FUSE_SET_ATTR_MTIME_NOW);
+    }
+
+  if (to_set != 0)
     {
       __debug__ (("replying with ENOSYS\n"));
       fuse_reply_err (req, ENOSYS);
@@ -1639,7 +1668,7 @@ glick_fs_setattr (fuse_req_t req, fuse_ino_t ino, struct stat *attr,
     }
 
   glick_inode_stat (inode, &res_stat);
-  __debug__ (("replying with access\n"));
+  __debug__ (("replying with new attrs\n"));
   fuse_reply_attr (req, &res_stat, ATTR_CACHE_TIMEOUT_SEC);
 }
 
