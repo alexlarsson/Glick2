@@ -496,7 +496,6 @@ glick_inode_is_hidden (GlickInode *inode)
 static void
 glick_inode_hide (GlickInode *inode)
 {
-  g_print ("glick_inode_hide %p\n", inode);
   glick_inode_set_flags (inode, GLICK_INODE_FLAGS_HIDDEN);
 }
 
