@@ -1950,18 +1950,10 @@ glick_mount_ref (GlickMount *mount)
 void
 glick_mount_unref (GlickMount *mount)
 {
-  GList *l;
-
   mount->ref_count--;
   if (mount->ref_count == 0)
     {
       mount->mounted = FALSE;
-
-      for (l = glick_publics; l != NULL; l = l->next)
-	{
-	  GlickPublic *public = l->data;
-	  glick_public_unapply_to_mount (public, mount);
-	}
 
       while (mount->slices != NULL)
 	{
@@ -1989,7 +1981,6 @@ GlickMount *
 glick_mount_new (const char *name)
 {
   GlickMount *mount;
-  GList *l;
 
   mount = g_new0 (GlickMount, 1);
   mount->ref_count = 1;
@@ -2008,12 +1999,6 @@ glick_mount_new (const char *name)
   glick_inode_set_immutable ((GlickInode *)mount->dir, TRUE);
   mount->dir->mount = mount;
   mount->dir->mount_path = g_strdup ("/");
-
-  for (l = glick_publics; l != NULL; l = l->next)
-    {
-      GlickPublic *public = l->data;
-      glick_public_apply_to_mount (public, mount);
-    }
 
   return mount;
 }
@@ -2511,7 +2496,6 @@ glick_public_new (char *filename)
   guint32 num_slices;
   guint32 slices_offset, i;
   GlickSliceRef *refs;
-  GList *l;
   GlickPublic *public;
   struct stat statbuf;
   GlickInode *symlink;
@@ -2560,12 +2544,7 @@ glick_public_new (char *filename)
 
   glick_publics = g_list_prepend (glick_publics, public);
 
-  for (l = glick_mounts; l != NULL; l = l->next)
-    {
-      GlickMount *mount = l->data;
-
-      glick_public_apply_to_mount (public, mount);
-    }
+  glick_public_apply_to_mount (public, public_mount);
 
   symlink = (GlickInode *)glick_inode_new_symlink (filename);
   glick_inode_dir_add_child (glick_bundles_dir, public->bundle_id, symlink);
@@ -2583,12 +2562,7 @@ glick_public_free (GlickPublic *public)
 
   glick_publics = g_list_remove (glick_publics, public);
 
-  for (l = glick_mounts; l != NULL; l = l->next)
-    {
-      GlickMount *mount = l->data;
-
-      glick_public_unapply_to_mount (public, mount);
-    }
+  glick_public_unapply_to_mount (public, public_mount);
 
   for (l = public->slices; l != NULL; l = l->next)
     {
