@@ -2765,6 +2765,8 @@ main_loop (struct fuse_session *se)
 
   public_mount = glick_mount_new_public ();
 
+  glick_inode_dir_add_child (public_mount->dir, ".bundles", (GlickInode *)glick_bundles_dir);
+
   fuse_channel = g_io_channel_unix_new (fuse_fd);
   g_io_add_watch (fuse_channel, G_IO_IN, got_fuse_request, se);
 
@@ -2858,7 +2860,6 @@ main (int argc, char *argv[])
   glick_inode_set_immutable ((GlickInode *)glick_root, TRUE);
 
   glick_bundles_dir = glick_inode_new_dir ();
-  glick_inode_dir_add_child (glick_root, ".bundles", (GlickInode *)glick_bundles_dir);
   glick_inode_own ((GlickInode *)glick_bundles_dir);
   glick_inode_set_immutable ((GlickInode *)glick_bundles_dir, TRUE);
 
