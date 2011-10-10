@@ -333,6 +333,7 @@ typedef struct {
   char *strings;
   guint32 strings_size;
   GlickSliceHash *hash;
+  goffset inodes_offset;
   GlickSliceInode *inodes;
   GlickSliceDirEntry *dirents;
   guint64 data_size;
@@ -428,6 +429,20 @@ slice_free (Slice *slice)
 }
 
 gboolean
+slice_rewrite_header (Slice *slice, GOutputStream *output, GError **error)
+{
+  if (!g_seekable_seek (G_SEEKABLE (output), slice->inodes_offset, G_SEEK_SET, NULL, error))
+    return FALSE;
+
+  if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				  slice->inodes, sizeof (GlickSliceInode) * slice->n_inodes,
+				  NULL, NULL, error))
+    return FALSE;
+
+  return TRUE;
+}
+
+gboolean
 slice_write_header (Slice *slice, GOutputStream *output, GError **error)
 {
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
@@ -440,6 +455,7 @@ slice_write_header (Slice *slice, GOutputStream *output, GError **error)
 				  NULL, NULL, error))
     return FALSE;
 
+  slice->inodes_offset = g_seekable_tell (G_SEEKABLE (output));
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  slice->inodes, sizeof (GlickSliceInode) * slice->n_inodes,
 				  NULL, NULL, error))
@@ -458,6 +474,64 @@ slice_write_header (Slice *slice, GOutputStream *output, GError **error)
   return TRUE;
 }
 
+static gssize
+copy_data (GInputStream     *source,
+	   GOutputStream    *output,
+	   GChecksum        *checksum,
+	   GCancellable     *cancellable,
+	   GError          **error)
+{
+  gssize n_read, n_written;
+  gsize bytes_copied;
+  char buffer[8192], *p;
+  gboolean res;
+
+  bytes_copied = 0;
+
+  res = TRUE;
+  do
+    {
+      n_read = g_input_stream_read (source, buffer, sizeof (buffer), cancellable, error);
+      if (n_read == -1)
+	{
+	  res = FALSE;
+	  break;
+	}
+
+      if (n_read == 0)
+	break;
+
+      g_checksum_update (checksum, (guchar *)buffer, n_read);
+
+      p = buffer;
+      while (n_read > 0)
+	{
+	  n_written = g_output_stream_write (output, p, n_read, cancellable, error);
+	  if (n_written == -1)
+	    {
+	      res = FALSE;
+	      break;
+	    }
+
+	  p += n_written;
+	  n_read -= n_written;
+	  bytes_copied += n_written;
+	}
+
+      if (bytes_copied > G_MAXSSIZE)
+	bytes_copied = G_MAXSSIZE;
+    }
+  while (res);
+
+  if (!res)
+    error = NULL; /* Ignore further errors */
+
+  if (res)
+    return bytes_copied;
+
+  return -1;
+}
+
 struct CollectData {
   GOutputStream *output;
   Slice *slice;
@@ -473,6 +547,7 @@ collect_data (SFile *file, void *user_data)
   GFile *f;
   GError *error;
   GFileInputStream *in;
+  GChecksum *checksum;
 
   if (! S_ISREG (file->statbuf.st_mode))
     return;
@@ -481,20 +556,34 @@ collect_data (SFile *file, void *user_data)
   error = NULL;
   in = g_file_read (f, NULL, &error);
   g_object_unref (f);
-  if (in == NULL) {
-    g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
-    exit (1);
-  }
-  size = g_output_stream_splice (output, G_INPUT_STREAM (in),
-				 G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE, NULL, &error);
-  if (size < 0) {
-    g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
-    exit (1);
-  }
-  if (size != file->statbuf.st_size) {
-    g_printerr ("Wrong fie size for %s. Did it change during scan?\n", file->full_path);
-    exit (1);
-  }
+  if (in == NULL)
+    {
+      g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
+      exit (1);
+    }
+
+  checksum = g_checksum_new (G_CHECKSUM_SHA1);
+
+  size = copy_data (G_INPUT_STREAM (in), output, checksum, NULL, &error);
+  if (size < 0)
+    {
+      g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
+      exit (1);
+    }
+  if (size != file->statbuf.st_size)
+    {
+      g_printerr ("Wrong file size for %s. Did it change during scan?\n", file->full_path);
+      exit (1);
+    }
+
+  gsize len = SHA1_CHECKSUM_SIZE;
+  g_checksum_get_digest (checksum,
+			 data->slice->inodes[file->inode].checksum,
+			 &len);
+  g_assert (len == SHA1_CHECKSUM_SIZE);
+
+  g_checksum_free (checksum);
+  g_input_stream_close (G_INPUT_STREAM (in), NULL, NULL);
   g_object_unref (in);
 }
 
@@ -670,10 +759,20 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
 				  NULL, NULL, error))
     return FALSE;
 
-  if (!g_output_stream_close (G_OUTPUT_STREAM (output), NULL, error)) {
-    g_object_unref (output);
-    return FALSE;
-  }
+
+  for (l = bundle->slices, i = 0; l != NULL; l = l->next, i++)
+    {
+      Slice *slice = l->data;
+
+      if (!slice_rewrite_header (slice, G_OUTPUT_STREAM (output), error))
+	return FALSE;
+    }
+
+  if (!g_output_stream_close (G_OUTPUT_STREAM (output), NULL, error))
+    {
+      g_object_unref (output);
+      return FALSE;
+    }
 
   g_object_unref (output);
   return TRUE;
