@@ -384,7 +384,8 @@ glick_inode_unref (GlickInode *inode)
   case GLICK_INODE_TYPE_SLICE_FILE:
     {
       GlickInodeSliceFile *file = (GlickInodeSliceFile *)inode;
-      g_hash_table_remove (glick_inodes_by_sha1, &file->slice_inode->checksum);
+      if (S_ISREG (inode->mode))
+	g_hash_table_remove (glick_inodes_by_sha1, &file->slice_inode->checksum);
 
       glick_slice_unref (file->slice);
     }
@@ -603,20 +604,26 @@ static GlickInodeSliceFile *
 glick_inode_new_slice_file (GlickSlice *slice, GlickSliceInode *slice_inode)
 {
   GlickInodeSliceFile *file;
+  guint16 mode = GUINT16_FROM_LE (slice_inode->mode);
 
-  file = g_hash_table_lookup (glick_inodes_by_sha1, &slice_inode->checksum);
-  if (file != NULL &&
-      file->slice_inode->size == slice_inode->size)
+  if (S_ISREG (mode))
     {
-      glick_inode_ref ((GlickInode *)file);
-      return file;
+      file = g_hash_table_lookup (glick_inodes_by_sha1, &slice_inode->checksum);
+      if (file != NULL &&
+	  file->slice_inode->size == slice_inode->size)
+	{
+	  glick_inode_ref ((GlickInode *)file);
+	  return file;
+	}
     }
 
   file = (GlickInodeSliceFile *)glick_inode_new (GLICK_INODE_TYPE_SLICE_FILE);
   file->slice = glick_slice_ref (slice);
   file->slice_inode = slice_inode;
-  file->base.mode = GUINT16_FROM_LE (slice_inode->mode);
-  g_hash_table_insert (glick_inodes_by_sha1, &slice_inode->checksum, file);
+  file->base.mode = mode;
+
+  if (S_ISREG (mode))
+    g_hash_table_insert (glick_inodes_by_sha1, &slice_inode->checksum, file);
 
   return file;
 }
