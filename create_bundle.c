@@ -432,33 +432,28 @@ slice_write_header (Slice *slice, GOutputStream *output, GError **error)
 {
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  &slice->header, sizeof (slice->header),
-				  NULL, NULL, error)) {
+				  NULL, NULL, error))
     return FALSE;
-  }
 
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  slice->hash, sizeof (GlickSliceHash) * slice->n_hashes,
-				  NULL, NULL, error)) {
+				  NULL, NULL, error))
     return FALSE;
-  }
 
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  slice->inodes, sizeof (GlickSliceInode) * slice->n_inodes,
-				  NULL, NULL, error)) {
+				  NULL, NULL, error))
     return FALSE;
-  }
 
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  slice->dirents, sizeof (GlickSliceDirEntry) * slice->n_dirents,
-				  NULL, NULL, error)) {
+				  NULL, NULL, error))
     return FALSE;
-  }
 
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  slice->strings, slice->strings_size,
-				  NULL, NULL, error)) {
+				  NULL, NULL, error))
     return FALSE;
-  }
 
   return TRUE;
 }
@@ -610,10 +605,11 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
   header->bundle_id_size = GUINT32_TO_LE (strlen (bundle->id));
   header->bundle_version_offset = GUINT32_TO_LE (version_offset);
   header->bundle_version_size = GUINT32_TO_LE (strlen (bundle->version));
-  if (bundle->default_executable != NULL) {
-    header->exec_offset = GUINT32_TO_LE (exec_offset);
-    header->exec_size = GUINT32_TO_LE (strlen (exec));
-  }
+  if (bundle->default_executable != NULL)
+    {
+      header->exec_offset = GUINT32_TO_LE (exec_offset);
+      header->exec_size = GUINT32_TO_LE (strlen (exec));
+    }
   header->slices_offset = GUINT32_TO_LE (sizeof (GlickBundleHeader));
   header->num_slices = GUINT32_TO_LE (g_list_length (bundle->slices));
 
@@ -621,58 +617,58 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
      we get the following data positioned yet, then we seek back and update */
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  header_data, header_data_len,
-				  NULL, NULL, error)) {
+				  NULL, NULL, error))
     return FALSE;
-  }
 
   offset = header_data_len;
 
   /* Write headers */
-  for (l = bundle->slices, i = 0; l != NULL; l = l->next, i++) {
-    Slice *slice = l->data;
-    ref = &slice_refs[i];
+  for (l = bundle->slices, i = 0; l != NULL; l = l->next, i++)
+    {
+      Slice *slice = l->data;
+      ref = &slice_refs[i];
 
-    // Round up to even page for next header
-    padding = offset % 4096;
-    if (padding != 0)
-      padding = 4096-padding;
-    offset += padding;
-    if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
-				    pad, padding,
-				    NULL, NULL, error))
-      return FALSE;
+      // Round up to even page for next header
+      padding = offset % 4096;
+      if (padding != 0)
+	padding = 4096-padding;
+      offset += padding;
+      if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
+				      pad, padding,
+				      NULL, NULL, error))
+	return FALSE;
 
-    ref->flags = GUINT32_TO_LE (slice->flags);
-    ref->header_offset = GUINT64_TO_LE (offset);
-    ref->header_size = GUINT64_TO_LE (slice->size);
-    offset += slice->size;
+      ref->flags = GUINT32_TO_LE (slice->flags);
+      ref->header_offset = GUINT64_TO_LE (offset);
+      ref->header_size = GUINT64_TO_LE (slice->size);
+      offset += slice->size;
 
-    if (!slice_write_header (slice, G_OUTPUT_STREAM (output), error))
-      return FALSE;
-  }
+      if (!slice_write_header (slice, G_OUTPUT_STREAM (output), error))
+	return FALSE;
+    }
 
   /* Write data */
-  for (l = bundle->slices, i = 0; l != NULL; l = l->next, i++) {
-    Slice *slice = l->data;
-    ref = &slice_refs[i];
+  for (l = bundle->slices, i = 0; l != NULL; l = l->next, i++)
+    {
+      Slice *slice = l->data;
+      ref = &slice_refs[i];
 
-    ref->data_offset = GUINT64_TO_LE (offset);
-    ref->data_size = GUINT64_TO_LE (slice->data_size);
-    offset += slice->data_size;
+      ref->data_offset = GUINT64_TO_LE (offset);
+      ref->data_size = GUINT64_TO_LE (slice->data_size);
+      offset += slice->data_size;
 
-    if (!slice_write_data (slice, G_OUTPUT_STREAM (output), error))
-      return FALSE;
-  }
+      if (!slice_write_data (slice, G_OUTPUT_STREAM (output), error))
+	return FALSE;
+    }
 
   /* Seek back to start and rewrite updated header */
-  if (!g_seekable_seek (G_SEEKABLE (output), 0, G_SEEK_SET, NULL, error)) {
+  if (!g_seekable_seek (G_SEEKABLE (output), 0, G_SEEK_SET, NULL, error))
     return FALSE;
-  }
+
   if (!g_output_stream_write_all (G_OUTPUT_STREAM (output),
 				  header_data, header_data_len,
-				  NULL, NULL, error)) {
+				  NULL, NULL, error))
     return FALSE;
-  }
 
   if (!g_output_stream_close (G_OUTPUT_STREAM (output), NULL, error)) {
     g_object_unref (output);
