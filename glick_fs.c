@@ -1506,6 +1506,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
       open->flags = fi->flags;
       open->fd = dup (transient->fd);
       fi->fh = (guint64)open;
+      fi->keep_cache = TRUE;
       fuse_reply_open (req, fi);
     }
     break;
@@ -1526,6 +1527,7 @@ glick_fs_open (fuse_req_t req, fuse_ino_t ino,
 	  open->end = open->start + GUINT64_FROM_LE (file->slice_inode->size);
 	  open->flags = fi->flags;
 	  fi->fh = (guint64)open;
+	  fi->keep_cache = TRUE;
 	  fuse_reply_open (req, fi);
 	}
       else
