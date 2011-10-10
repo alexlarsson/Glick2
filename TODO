@@ -1,0 +1,6 @@
+Add bloom table for hash lookups
+Support access()
+Do file writes in threads
+debug why gnome-shell doesn't pick up removal of bundle desktop files
+Use hash-split?
+Compressed files

@@ -19,15 +19,6 @@
 #include "glick.h"
 #include "format.h"
 
-/* TODO:
- * Add bloom table for hash lookups
- * Support access()
- * Do file writes in threads
- * debug why gnome-shell doesn't pick up removal of bundle desktop files
- * Use hash-split?
- * Compressed files
- */
-
 typedef enum {
   GLICK_INODE_FLAGS_NONE = 0,
   GLICK_INODE_FLAGS_OWNED = 1 << 0,
