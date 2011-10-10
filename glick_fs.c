@@ -20,7 +20,6 @@
 #include "format.h"
 
 /* TODO:
- * Add support for mtime/ctime/atime in slices
  * Add bloom table for hash lookups
  * Support access()
  * Do file writes in threads
@@ -621,6 +620,8 @@ glick_inode_new_slice_file (GlickSlice *slice, GlickSliceInode *slice_inode)
   file->slice = glick_slice_ref (slice);
   file->slice_inode = slice_inode;
   file->base.mode = mode;
+  file->base.mtime = GUINT64_FROM_LE (slice_inode->mtime);
+  file->base.ctime = file->base.mtime;
 
   if (S_ISREG (mode))
     g_hash_table_insert (glick_inodes_by_sha1, &slice_inode->checksum, file);

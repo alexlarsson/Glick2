@@ -60,7 +60,6 @@ typedef struct {
   guint16 mode;
   guint16 flags;
   guint64 mtime;
-  guint64 ctime;
   guint64 offset; /* data_offset for files, dirs_offset for dirs */
   guint64 size;   /* n_bytes for files, n_files for dirs */
   guint8 checksum[SHA1_CHECKSUM_SIZE]; /* Only for regular files */

@@ -281,6 +281,7 @@ collect_inode (SFile *file, void *user_data)
     inode->parent_inode = file->inode;
 
   inode->mode = GUINT16_TO_LE (file->statbuf.st_mode);
+  inode->mtime = GUINT64_TO_LE (file->statbuf.st_mtime);
   if (S_ISDIR (file->statbuf.st_mode)) {
     int n_entries = g_list_length (file->children);
     inode->size = GUINT64_TO_LE (n_entries);
