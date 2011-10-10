@@ -30,6 +30,7 @@
  * debug why gnome-shell doesn't pick up removal of bundle desktop files
  * Use hash-split?
  * Compressed files
+ * Reuse mount with same fd as other mountref
  */
 
 typedef enum {
