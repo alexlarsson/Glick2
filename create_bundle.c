@@ -280,14 +280,14 @@ collect_inode (SFile *file, void *user_data)
   else
     inode->parent_inode = file->inode;
 
-  inode->mode = GUINT32_TO_LE (file->statbuf.st_mode);
+  inode->mode = GUINT16_TO_LE (file->statbuf.st_mode);
   if (S_ISDIR (file->statbuf.st_mode)) {
     int n_entries = g_list_length (file->children);
     inode->size = GUINT64_TO_LE (n_entries);
     inode->offset = GUINT64_TO_LE (inode_data->last_dirent);
     for (l = file->children, i = 0; l != NULL; l = l->next, i++) {
       SFile *child = l->data;
-      inode_data->dirents[inode_data->last_dirent++].inode = GUINT16_TO_LE (child->inode);
+      inode_data->dirents[inode_data->last_dirent++].inode = GUINT32_TO_LE (child->inode);
     }
   } else if (S_ISREG (file->statbuf.st_mode)) {
     inode->size = GUINT32_TO_LE (file->statbuf.st_size);
@@ -308,7 +308,7 @@ collect_inode (SFile *file, void *user_data)
     bucket = (bucket + step) % inode_data->n_hashes;
     step++;
   }
-  inode_data->hash[bucket].inode = GUINT16_TO_LE (file->inode);
+  inode_data->hash[bucket].inode = GUINT32_TO_LE (file->inode);
 }
 
 static gint
@@ -336,7 +336,6 @@ typedef struct {
   GlickSliceInode *inodes;
   GlickSliceDirEntry *dirents;
   guint64 data_size;
-  GChecksum *checksum;
   SFile *root;
 } Slice;
 
@@ -354,7 +353,7 @@ slice_new (SFile *root)
 
   n_inodes = 0;
   visit_depth_first (root, assign_inode, &n_inodes);
-  if (n_inodes >= G_MAXUINT16) {
+  if (n_inodes >= G_MAXUINT32) {
     fprintf (stderr, "To many inodes\n");
     exit (1);
   }
@@ -414,14 +413,6 @@ slice_new (SFile *root)
 
   slice->data_size = inode_data.data_offset;
 
-  slice->checksum = g_checksum_new (G_CHECKSUM_SHA1);
-
-  g_checksum_update (slice->checksum, (guchar *)&slice->header, sizeof (GlickSliceHeader));
-  g_checksum_update (slice->checksum, (guchar *)slice->hash, hash_size);
-  g_checksum_update (slice->checksum, (guchar *)slice->inodes, inodes_size);
-  g_checksum_update (slice->checksum, (guchar *)slice->dirents, dirents_size);
-  g_checksum_update (slice->checksum, (guchar *)slice->strings, slice->strings_size);
-
   return slice;
 }
 
@@ -432,7 +423,6 @@ slice_free (Slice *slice)
   g_free (slice->hash);
   g_free (slice->inodes);
   g_free (slice->dirents);
-  g_checksum_free (slice->checksum);
   // TODO: Free slice->root
   g_free (slice);
 }
@@ -500,7 +490,6 @@ collect_data (SFile *file, void *user_data)
     g_printerr ("Can't read file %s: %s\n", file->full_path, error->message);
     exit (1);
   }
-  // TODO: Update checksum
   size = g_output_stream_splice (output, G_INPUT_STREAM (in),
 				 G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE, NULL, &error);
   if (size < 0) {
@@ -673,8 +662,6 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
 
     if (!slice_write_data (slice, G_OUTPUT_STREAM (output), error))
       return FALSE;
-
-    /* TODO: Update ref->checksum */
   }
 
   /* Seek back to start and rewrite updated header */

@@ -23,13 +23,14 @@ typedef struct {
   guint32 num_slices;
 } GlickBundleHeader;
 
+#define SHA1_CHECKSUM_SIZE 20
+
 typedef struct {
   guint64 header_offset;
   guint64 header_size;
   guint64 data_offset;
   guint64 data_size;
   guint32 flags;
-  guint8 checksum[20]; // SHA-1 digest of header + data
 } GlickSliceRef;
 
 typedef struct {
@@ -45,21 +46,28 @@ typedef struct {
 
 typedef struct {
   /* Hashed by full path */
-  guint16 inode;
+  guint32 inode;
 }  GlickSliceHash;
+
+enum {
+  GLICK_SLICE_INODE_FLAGS_NONE = 0,
+} GlickSliceInodeFlags;
 
 typedef struct {
   guint32 path_hash;
   guint32 name;
-  guint16 parent_inode;
-  guint16 pad;
-  guint32 mode;
+  guint32 parent_inode;
+  guint16 mode;
+  guint16 flags;
+  guint64 mtime;
+  guint64 ctime;
   guint64 offset; /* data_offset for files, dirs_offset for dirs */
   guint64 size;   /* n_bytes for files, n_files for dirs */
+  guint8 checksum[SHA1_CHECKSUM_SIZE]; /* Only for regular files */
 } GlickSliceInode;
 
 typedef struct {
-  guint16 inode; /* index in inodes */
+  guint32 inode;
 } GlickSliceDirEntry;
 
-#define INVALID_INODE 0xffff
+#define INVALID_INODE 0xffffffffU

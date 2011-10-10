@@ -28,6 +28,8 @@
  * Use sha1 at the file level
  * use bup-style hashing for file parts
  * debug why gnome-shell doesn't pick up removal of bundle desktop files
+ * Use hash-split?
+ * Compressed files
  */
 
 typedef enum {
@@ -598,7 +600,7 @@ glick_inode_new_slice_file (GlickSlice *slice, GlickSliceInode *slice_inode)
   GlickInodeSliceFile *file = (GlickInodeSliceFile *)glick_inode_new (GLICK_INODE_TYPE_SLICE_FILE);
   file->slice = glick_slice_ref (slice);
   file->slice_inode = slice_inode;
-  file->base.mode = GUINT32_FROM_LE (slice_inode->mode);
+  file->base.mode = GUINT16_FROM_LE (slice_inode->mode);
 
   return file;
 }
@@ -745,7 +747,7 @@ static GlickInode *
 create_child_from_slice_inode (GlickInodeDir *parent_inode, const char *name,
 			       GlickSliceInode *slice_inode, GlickSlice *slice, guint32 inode_num)
 {
-  guint32 mode = GUINT32_FROM_LE (slice_inode->mode);
+  guint32 mode = GUINT16_FROM_LE (slice_inode->mode);
   GlickInodeDir *dir;
   GlickInode *inode;
 
@@ -804,7 +806,7 @@ try_to_create_children_for_slice (GlickInodeDir *dir, GlickSlice *slice, CreateF
   dir_path_hash = djb_hash (dir->mount_path);
 
   slice_inode = glick_slice_lookup_path (slice, dir->mount_path, dir_path_hash, &inode_num);
-  if (slice_inode != NULL && S_ISDIR (GUINT32_FROM_LE (slice_inode->mode)))
+  if (slice_inode != NULL && S_ISDIR (GUINT16_FROM_LE (slice_inode->mode)))
     {
       dirent = GUINT64_FROM_LE (slice_inode->offset);
       last_dirent = dirent + GUINT64_FROM_LE (slice_inode->size);
@@ -812,7 +814,7 @@ try_to_create_children_for_slice (GlickInodeDir *dir, GlickSlice *slice, CreateF
       last_dirent = MIN (last_dirent, slice->num_dirs);
       for (i = dirent; i < last_dirent; i++)
 	{
-	  guint16 entry_inode = GUINT16_FROM_LE (slice->dirs[i].inode);
+	  guint16 entry_inode = GUINT32_FROM_LE (slice->dirs[i].inode);
 	  if (entry_inode < slice->num_inodes)
 	    {
 	      GlickSliceInode *entry_slice_inode = &slice->inodes[entry_inode];
@@ -1912,7 +1914,7 @@ glick_slice_inode_has_path (GlickSlice *slice, GlickSliceInode *inodep, const ch
   if (!glick_slice_string_equal (slice, GUINT32_FROM_LE (inodep->name), path_component, path_end))
     return FALSE;
 
-  parent_inode = GUINT16_FROM_LE (inodep->parent_inode);
+  parent_inode = GUINT32_FROM_LE (inodep->parent_inode);
   if (parent_inode >= slice->num_inodes)
     return FALSE;
 
@@ -1947,7 +1949,7 @@ glick_slice_lookup_path (GlickSlice *slice, const char *path, guint32 path_hash,
 
   step = 1;
   while (slice->hash[hash_bin].inode != INVALID_INODE) {
-    inode = GUINT16_FROM_LE (slice->hash[hash_bin].inode);
+    inode = GUINT32_FROM_LE (slice->hash[hash_bin].inode);
     if (inode < slice->num_inodes) {
       inodep = &slice->inodes[inode];
       if (GUINT32_FROM_LE (inodep->path_hash) == path_hash &&
