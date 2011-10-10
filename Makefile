@@ -7,7 +7,7 @@ LIBDIR=${PREFIX}/lib
 all: private-mount glick2 to_c glick_fs create_bundle
 
 clean:
-	rm -f private-mount glick2 to_c glick_fs
+	rm -f private-mount glick2 to_c glick_fs create_bundle
 
 install: private-mount
 	install -m 4755 -o root private-mount ${BINDIR}
