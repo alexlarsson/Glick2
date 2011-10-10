@@ -197,6 +197,7 @@ struct _GlickThreadOp {
 static GlickInodeDir *glick_root;
 static GlickInodeDir *glick_bundles_dir;
 static GHashTable *glick_inodes; /* inode -> GlickInode */
+static GHashTable *glick_inodes_by_sha1; /* sha1 -> GlickInodeSliceFile */
 static fuse_ino_t glick_inode_counter = 1;
 static char *glick_mountpoint = NULL;
 static GThreadPool*glick_thread_pool = NULL;
@@ -387,6 +388,8 @@ glick_inode_unref (GlickInode *inode)
   case GLICK_INODE_TYPE_SLICE_FILE:
     {
       GlickInodeSliceFile *file = (GlickInodeSliceFile *)inode;
+      g_hash_table_remove (glick_inodes_by_sha1, &file->slice_inode->checksum);
+
       glick_slice_unref (file->slice);
     }
     break;
@@ -603,10 +606,21 @@ glick_inode_new_dir (void)
 static GlickInodeSliceFile *
 glick_inode_new_slice_file (GlickSlice *slice, GlickSliceInode *slice_inode)
 {
-  GlickInodeSliceFile *file = (GlickInodeSliceFile *)glick_inode_new (GLICK_INODE_TYPE_SLICE_FILE);
+  GlickInodeSliceFile *file;
+
+  file = g_hash_table_lookup (glick_inodes_by_sha1, &slice_inode->checksum);
+  if (file != NULL &&
+      file->slice_inode->size == slice_inode->size)
+    {
+      glick_inode_ref ((GlickInode *)file);
+      return file;
+    }
+
+  file = (GlickInodeSliceFile *)glick_inode_new (GLICK_INODE_TYPE_SLICE_FILE);
   file->slice = glick_slice_ref (slice);
   file->slice_inode = slice_inode;
   file->base.mode = GUINT16_FROM_LE (slice_inode->mode);
+  g_hash_table_insert (glick_inodes_by_sha1, &slice_inode->checksum, file);
 
   return file;
 }
@@ -3145,6 +3159,23 @@ thread_pool_func (gpointer data,
     g_free (op);
 }
 
+static gboolean
+sha1_digest_equal (gconstpointer  a,
+		   gconstpointer  b)
+{
+  return memcmp (a, b, SHA1_CHECKSUM_SIZE) == 0;
+}
+
+guint
+sha1_digest_hash (gconstpointer  key)
+{
+  const guint32 *p = key;
+
+  /* All the bits are essentially random, i don't think we gain anything
+     by mixing them up, so just use the first 32 bit */
+  return *p;
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -3161,6 +3192,7 @@ main (int argc, char *argv[])
 
 
   glick_inodes = g_hash_table_new (g_direct_hash, g_direct_equal);
+  glick_inodes_by_sha1 = g_hash_table_new (sha1_digest_hash, sha1_digest_equal);
 
   glick_root = glick_inode_new_dir ();
   glick_root->base.kernel_ref_count++;
