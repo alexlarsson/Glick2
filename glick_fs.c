@@ -99,6 +99,11 @@ typedef struct {
   char *bundle_version;
   gboolean mounted;
 
+  /* From fstat */
+  dev_t fd_dev;
+  ino_t fd_ino;
+  guint64 fd_size;
+
   GlickInodeDir *dir;
   GList *slices;
   GList *triggers;
@@ -2150,20 +2155,16 @@ glick_mount_new_public (void)
 }
 
 char *
-map_and_verify_bundle (int fd, gsize *mapped_size)
+map_and_verify_bundle (int fd, struct stat *statbuf, gsize *mapped_size)
 {
   GlickBundleHeader *header;
   char *data;
-  struct stat statbuf;
   guint32 header_size;
   guint32 num_slices;
   guint32 slices_offset;
   guint64 slices_size;
 
-  if (fstat (fd, &statbuf) != 0)
-    return NULL;
-
-  if (sizeof (GlickBundleHeader) >= statbuf.st_size)
+  if (sizeof (GlickBundleHeader) >= statbuf->st_size)
     return NULL;
 
   data = mmap (NULL, sizeof (GlickBundleHeader), PROT_READ,
@@ -2177,7 +2178,7 @@ map_and_verify_bundle (int fd, gsize *mapped_size)
   munmap (data, sizeof (GlickBundleHeader));
 
   /* Ensure that the header fits in the file */
-  if (header_size >= statbuf.st_size)
+  if (header_size >= statbuf->st_size)
     return NULL;
 
   /* header_size is uint32, so this can't wrap gsize */
@@ -2205,9 +2206,9 @@ map_and_verify_bundle (int fd, gsize *mapped_size)
   slices_size = num_slices * sizeof (GlickSliceRef);
 
   /* Ensure that the slice fits in the file */
-  if (slices_offset >= statbuf.st_size ||
-      slices_size > statbuf.st_size ||
-      slices_offset > statbuf.st_size - slices_size)
+  if (slices_offset >= statbuf->st_size ||
+      slices_size > statbuf->st_size ||
+      slices_offset > statbuf->st_size - slices_size)
     {
       munmap (data, header_size);
       return NULL;
@@ -2220,6 +2221,7 @@ map_and_verify_bundle (int fd, gsize *mapped_size)
 GlickMount *
 glick_mount_new_for_bundle (int fd)
 {
+  struct stat statbuf;
   GlickMount *mount;
   GlickBundleHeader *header;
   char *data;
@@ -2227,8 +2229,21 @@ glick_mount_new_for_bundle (int fd)
   guint32 num_slices;
   guint32 slices_offset, i;
   GlickSliceRef *refs;
+  GList *l;
 
-  data = map_and_verify_bundle (fd, &header_size);
+  if (fstat (fd, &statbuf) != 0)
+    return NULL;
+
+  for (l = glick_mounts; l != NULL; l = l->next)
+    {
+      GlickMount *mount = l->data;
+      if (mount->fd_dev == statbuf.st_dev &&
+	  mount->fd_ino == statbuf.st_ino &&
+	  mount->fd_size == statbuf.st_size)
+	return glick_mount_ref (mount);
+    }
+
+  data = map_and_verify_bundle (fd, &statbuf, &header_size);
   if (data == NULL)
     return NULL;
 
@@ -2237,6 +2252,10 @@ glick_mount_new_for_bundle (int fd)
   mount = glick_mount_new (NULL);
   if (mount == NULL)
     goto out;
+
+  mount->fd_dev = statbuf.st_dev;
+  mount->fd_ino = statbuf.st_ino;
+  mount->fd_size = statbuf.st_size;
 
   slices_offset = GUINT32_FROM_LE (header->slices_offset);
   num_slices = GUINT32_FROM_LE (header->num_slices);
@@ -2728,7 +2747,7 @@ glick_public_new (char *filename)
   if (fstat (fd, &statbuf) != 0)
     return NULL;
 
-  data = map_and_verify_bundle (fd, &header_size);
+  data = map_and_verify_bundle (fd, &statbuf, &header_size);
   if (data == NULL)
     return NULL;
 
