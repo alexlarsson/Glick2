@@ -1,5 +1,5 @@
-create_bundle
+glick-mkbundle
 glick-runner
 glick_fs
 makershared
-private-mount
+glick-helper
