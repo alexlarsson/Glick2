@@ -1192,7 +1192,8 @@ glick_fs_unlink (fuse_req_t req, fuse_ino_t parent, const char *name)
   if (child == NULL)
     return;
 
-  if (parent_inode->mount)
+  if (parent_inode->mount &&
+      !glick_inode_is_removable (child))
     {
       char *path = g_build_filename (parent_inode->mount_path, name, NULL);
       if (glick_mount_lookup_path (parent_inode->mount, path, NULL, NULL) != NULL)
