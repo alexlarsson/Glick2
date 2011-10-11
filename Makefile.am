@@ -81,3 +81,22 @@ if UPDATE_CACHES
 else
 	@true
 endif
+
+edit = sed \
+	-e 's|@bindir[@]|$(bindir)|g' \
+	-e 's|@pkgdatadir[@]|$(pkgdatadir)|g' \
+	-e 's|@prefix[@]|$(prefix)|g'
+
+binfmtdir = ${sysconfdir}/binfmt.d
+binfmt_SCRIPTS = glick2.conf
+
+# Binfmt config file
+glick2.conf: Makefile glick2.conf.in
+	rm -f $@ $@.tmp
+	srcdir=''; \
+	  test -f ./$@.in || srcdir=$(srcdir)/; \
+	  $(edit) $${srcdir}$@.in >$@.tmp
+	mv $@.tmp $@
+
+
+EXTRA_DIST=glick2.conf.in
