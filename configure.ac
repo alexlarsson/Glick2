@@ -22,6 +22,22 @@ PKG_CHECK_MODULES(GIO, [$gio_modules])
 fuse_modules="fuse"
 PKG_CHECK_MODULES(FUSE, [$fuse_modules])
 
+AC_ARG_WITH(bundle_prefix,
+	AS_HELP_STRING([--with-bundle-prefix=DIR],[Prefix used for bundles @<:@/opt/bundle@:>@]),
+	[ac_with_bundle_prefix=$withval],
+	[ac_with_bundle_prefix="/opt/bundle"])
+AC_DEFINE_UNQUOTED(BUNDLE_PREFIX, "$ac_with_bundle_prefix", [The default prefix for bundles])
+BUNDLE_PREFIX=$ac_with_bundle_prefix
+AC_SUBST(BUNDLE_PREFIX)
+
+AC_ARG_WITH(session_prefix,
+	AS_HELP_STRING([--with-session_prefix=DIR],[Prefix used for bundle exports @<:@/opt/session@:>@]),
+	[ac_with_session_prefix=$withval],
+	[ac_with_session_prefix="/opt/session"])
+AC_DEFINE_UNQUOTED(SESSION_PREFIX, "$ac_with_session_prefix", [The default prefix for bundle exports])
+SESSION_PREFIX=$ac_with_session_prefix
+AC_SUBST(SESSION_PREFIX)
+
 if test "x$GCC" = "xyes"; then
   case " $CFLAGS " in
   *[[\ \	]]-Wall[[\ \	]]*) ;;

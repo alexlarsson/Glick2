@@ -34,6 +34,10 @@ glick_fs_LDADD = $(GIO_LIBS) $(FUSE_LIBS)
 glick_mkbundle_SOURCES = mkbundle.c
 glick_mkbundle_LDADD = $(GIO_LIBS)
 
+install-data-local:
+	$(mkinstalldirs) $(DESTDIR)$(BUNDLE_PREFIX)
+	$(mkinstalldirs) $(DESTDIR)$(SESSION_PREFIX)
+
 install-exec-hook:
 	chown root $(DESTDIR)$(libexecdir)/glick-helper
 	chmod 4755 $(DESTDIR)$(libexecdir)/glick-helper

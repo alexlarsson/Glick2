@@ -1,3 +1,5 @@
+#include "config.h"
+
 #define _GNU_SOURCE /* Required for CLONE_NEWNS */
 #include <sys/mount.h>
 #include <sched.h>
@@ -6,8 +8,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-
-#define GLICK_PREFIX "/opt/glick"
 
 int
 main (int argc,
@@ -56,19 +56,19 @@ main (int argc,
   }
 
   mount_count = 0;
-  res = mount (GLICK_PREFIX, GLICK_PREFIX,
+  res = mount (BUNDLE_PREFIX, BUNDLE_PREFIX,
 	       NULL, MS_PRIVATE, NULL);
   if (res != 0 && errno == EINVAL) {
     /* Maybe if failed because there is no mount
        to be made private at that point, letsa
        add a bind mount there. */
-    res = mount (GLICK_PREFIX, GLICK_PREFIX,
+    res = mount (BUNDLE_PREFIX, BUNDLE_PREFIX,
 		 NULL, MS_BIND, NULL);
     /* And try again */
     if (res == 0)
       {
 	mount_count++; /* Bind mount succeeded */
-	res = mount (GLICK_PREFIX, GLICK_PREFIX,
+	res = mount (BUNDLE_PREFIX, BUNDLE_PREFIX,
 		     NULL, MS_PRIVATE, NULL);
       }
   }
@@ -91,7 +91,7 @@ main (int argc,
       mount_count++; /* Extra mount succeeded */
     }
 
-  res = mount (mount_source, GLICK_PREFIX,
+  res = mount (mount_source, BUNDLE_PREFIX,
 	       NULL, MS_BIND, NULL);
   if (res != 0) {
     perror ("Failed to bind the source directory");
@@ -115,10 +115,10 @@ main (int argc,
     executable = executable_relative;
   else
     {
-      executable = malloc (strlen (GLICK_PREFIX) + strlen (executable_relative) + 1);
+      executable = malloc (strlen (BUNDLE_PREFIX) + strlen (executable_relative) + 1);
       if (executable != NULL)
 	{
-	  strcpy (executable, GLICK_PREFIX);
+	  strcpy (executable, BUNDLE_PREFIX);
 	  strcat (executable, executable_relative);
 	}
     }
@@ -145,6 +145,6 @@ main (int argc,
 
  error_out:
   while (mount_count-- > 0)
-    umount (GLICK_PREFIX);
+    umount (BUNDLE_PREFIX);
   return 1;
 }
