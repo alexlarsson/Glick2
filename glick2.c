@@ -434,5 +434,6 @@ main (int argc, char *argv[])
     child_argv[i++] = argv[j];
   child_argv[i++] = NULL;
 
+  setenv ("BUNDLE_PREFIX", glick_subdir, TRUE);
   return execv (child_argv[0], child_argv);
 }
