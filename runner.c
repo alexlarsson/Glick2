@@ -15,6 +15,7 @@
 #include <assert.h>
 #include <glib.h>
 #include <sys/mman.h>
+#include <string.h>
 
 #include "glick.h"
 #include "format.h"
@@ -312,24 +313,38 @@ main (int argc, char *argv[])
   gsize header_size;
   char *default_executable;
   char *exec, *argv0;
+  char *bundle_path;
+  char *custom_executable;
+  int argc_offset;
 
-  if (argc < 2)
+  argc_offset = 1;
+
+  if (argc_offset >= argc)
     {
       fprintf (stderr, "No image specified\n");
       return 1;
     }
+  bundle_path = argv[argc_offset++];
 
-  exe_fd = open (argv[1], O_RDONLY);
+  custom_executable = NULL;
+  if (argc - argc_offset >= 2 &&
+      strcmp ("-exec", argv[argc_offset]) == 0)
+    {
+      custom_executable = argv[argc_offset+1];
+      argc_offset += 2;
+    }
+
+  exe_fd = open (bundle_path, O_RDONLY);
   if (exe_fd == -1)
     {
-      fprintf (stderr, "Unable to open %s\n", argv[1]);
+      fprintf (stderr, "Unable to open %s\n", bundle_path);
       return 1;
     }
 
   data = map_and_verify_bundle (exe_fd, &header_size);
   if (data == NULL)
     {
-      fprintf (stderr, "Invalid bundle format in file %s\n", argv[1]);
+      fprintf (stderr, "Invalid bundle format in file %s\n", bundle_path);
       return 1;
     }
 
@@ -393,7 +408,7 @@ main (int argc, char *argv[])
   if (pid == 0)
     {
       size_t arg_len;
-      char *bundle = g_strdup (argv[1]);
+      char *bundle = g_strdup (bundle_path);
 
       arg_len = argv[argc-1] + strlen (argv[argc-1]) - argv[0];
 
@@ -418,19 +433,25 @@ main (int argc, char *argv[])
   close (fuse_mounted_pipe[READ_SIDE]);
 
   snprintf (fd_buf, sizeof (fd_buf), "%d", internal_mount_done_pipe[WRITE_SIDE]);
-  fd_buf[sizeof(fd_buf)] = 0; // Ensure zero termination
+  fd_buf[sizeof(fd_buf)-1] = 0; // Ensure zero termination
 
   exec = "/bin/sh";
   argv0 = NULL;
-  if (default_executable)
+  if (custom_executable)
     {
-      g_print ("default_executable: %s\n", default_executable);
+      if (*custom_executable == '/')
+	exec = custom_executable;
+      else
+	exec = g_build_filename (glick_subdir, custom_executable, NULL);
+    }
+  else if (default_executable)
+    {
       if (*default_executable == '/')
 	exec = default_executable;
       else
 	{
 	  exec = g_build_filename (glick_subdir, default_executable, NULL);
-	  argv0 = argv[1];
+	  argv0 = bundle_path;
 	}
     }
 
@@ -451,7 +472,7 @@ main (int argc, char *argv[])
   child_argv[i++] = fd_buf;
 
   child_argv[i++] = argv0;
-  for (j = 2; j < argc; j++)
+  for (j = argc_offset; j < argc; j++)
     child_argv[i++] = argv[j];
 
   child_argv[i++] = NULL;
