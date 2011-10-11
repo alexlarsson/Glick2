@@ -20,7 +20,7 @@ libexec_PROGRAMS =				\
 	$(NULL)
 
 
-glick_helper_SOURCES = glick-helper.c
+glick_helper_SOURCES = helper.c
 glick_helper_LDADD = $(GLIB_LIBS)
 
 makershared_SOURCES = makershared.c
