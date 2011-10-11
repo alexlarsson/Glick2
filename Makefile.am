@@ -6,7 +6,9 @@ AM_CPPFLAGS =					\
 	$(GLIB_CFLAGS)				\
 	$(GIO_CFLAGS)				\
 	$(FUSE_CFLAGS)				\
-	-DLIBEXECDIR=\"$(libexecdir)/\"
+	-DLIBEXECDIR=\"$(libexecdir)/\"		\
+	-DBINDIR=\"$(bindir)/\"			\
+	$(NULL)
 
 bin_PROGRAMS =					\
 	glick-mkbundle				\

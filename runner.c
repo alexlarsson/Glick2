@@ -316,6 +316,8 @@ main (int argc, char *argv[])
   char *bundle_path;
   char *custom_executable;
   int argc_offset;
+  gboolean spawned_fs;
+  int retry_count;
 
   argc_offset = 1;
 
@@ -362,12 +364,39 @@ main (int argc, char *argv[])
   glick_mount = g_build_filename (homedir, ".glick", NULL);
   glick_socket = g_build_filename (glick_mount, "socket", NULL);
 
-  socket_fd = connect_to_socket (glick_socket);
-  if (socket_fd == -1)
+  spawned_fs = FALSE;
+  retry_count = 0;
+  do
     {
-      fprintf (stderr, "Unable to contact glick filesystem\n");
-      return 1;
+      socket_fd = connect_to_socket (glick_socket);
+      if (socket_fd == -1)
+	{
+	  GError *error = NULL;
+	  gchar *fs_argv[] = { BINDIR "/glick-fs", NULL };
+
+	  if (!spawned_fs)
+	    {
+	      if (!g_spawn_async (g_get_home_dir (),
+				  fs_argv,
+				  NULL,
+				  G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+				  NULL, NULL,
+				  NULL, &error))
+		{
+		  fprintf (stderr, "Unable to start glick filesystem: %s\n", error->message);
+		  return 1;
+		}
+	      spawned_fs = TRUE;
+	    }
+	  sleep (1);
+	  if (retry_count++ == 10)
+	    {
+	      fprintf (stderr, "Unable to contact glick filesystem\n");
+	      return 1;
+	    }
+	}
     }
+  while (socket_fd == -1);
 
   g_free (glick_socket);
 
