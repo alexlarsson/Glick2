@@ -440,7 +440,7 @@ main (int argc, char *argv[])
   /* Spawn the make-private-namespace handler */
   child_argv = malloc ((1 + 5 + (argc) + 1 ) * sizeof (char *));
   i = 0;
-  child_argv[i++] = BINDIR "/private-mount";
+  child_argv[i++] = LIBEXECDIR "/glick-helper";
   child_argv[i++] = glick_subdir;
   child_argv[i++] = exec;
   /* Make it write to internal_mount_done_pipe when internals mounts are set up to wake the fuse
