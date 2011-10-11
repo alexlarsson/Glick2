@@ -11,7 +11,7 @@ AM_CPPFLAGS =					\
 bin_PROGRAMS =					\
 	glick-mkbundle				\
 	glick-runner				\
-	glick_fs				\
+	glick-fs				\
 	makershared				\
 	$(NULL)
 
@@ -28,7 +28,7 @@ makershared_SOURCES = makershared.c
 glick_runner_SOURCES = runner.c
 glick_runner_LDADD = $(GLIB_LIBS) $(FUSE_LIBS)
 
-glick_fs_SOURCES = glick_fs.c
+glick_fs_SOURCES = fs.c
 glick_fs_LDADD = $(GIO_LIBS) $(FUSE_LIBS)
 
 glick_mkbundle_SOURCES = mkbundle.c
