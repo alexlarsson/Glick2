@@ -35,7 +35,7 @@ typedef enum {
   GLICK_INODE_TYPE_SLICE_FILE
 } GlickInodeType;
 
-#define BUNDLES_DIR "Apps"
+#define BUNDLES_DIR "bundles"
 
 typedef struct GlickInodeDir GlickInodeDir;
 
@@ -3124,7 +3124,8 @@ main_loop (struct fuse_session *se)
   ready_pipe_channel = g_io_channel_unix_new (master_socket_ready_pipe);
   g_io_add_watch (ready_pipe_channel, G_IO_IN, ready_pipe_cb, ready_pipe_channel);
 
-  bundle_dir = g_build_filename (g_get_home_dir (), BUNDLES_DIR, NULL);
+  add_public_dir (LIBDIR "/" BUNDLES_DIR);
+  bundle_dir = g_build_filename (g_get_home_dir (), ".local", BUNDLES_DIR, NULL);
   add_public_dir (bundle_dir);
 
   g_main_loop_run (mainloop);

@@ -6,8 +6,9 @@ AM_CPPFLAGS =					\
 	$(GLIB_CFLAGS)				\
 	$(GIO_CFLAGS)				\
 	$(FUSE_CFLAGS)				\
-	-DLIBEXECDIR=\"$(libexecdir)/\"		\
-	-DBINDIR=\"$(bindir)/\"			\
+	-DLIBEXECDIR=\"$(libexecdir)\"		\
+	-DBINDIR=\"$(bindir)\"			\
+	-DLIBDIR=\"$(libdir)\"			\
 	$(NULL)
 
 bin_PROGRAMS =					\
