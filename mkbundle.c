@@ -103,7 +103,13 @@ split_files (SFile *orig_file, char **split_paths, gboolean *replace_orig)
 
   for (i = 0; split_paths[i] != NULL; i++)
     {
-      if (strcmp (split_paths[i], orig_file->relative_path) == 0)
+      char *path;
+
+      path = split_paths[i];
+      while (*path == '/')
+	path++;
+
+      if (strcmp (path, orig_file->relative_path+1) == 0)
 	{
 	  *replace_orig = TRUE;
 	  return orig_file;
@@ -785,6 +791,20 @@ bundle_write (Bundle *bundle, GFile *dest, GError **error)
 #define BUNDLE_KEY_EXEC "Exec"
 #define BUNDLE_KEY_EXPORT "Export"
 
+static char *bundle_version;
+static char *bundle_id;
+static char *default_executable;
+static char **exports;
+
+static GOptionEntry entries[] =
+{
+  { "bundle-id", 'i', 0, G_OPTION_ARG_STRING, &bundle_id, "Bundle Id (e.g org.foobar.MyApp)", "id" },
+  { "bundle-version", 'v', 0, G_OPTION_ARG_STRING, &bundle_version, "Bundle Version (e.g 1.0)", "version" },
+  { "default-executable", 'e', 0, G_OPTION_ARG_STRING, &default_executable, "Default executable path", "executable" },
+  { "export", 'E', 0, G_OPTION_ARG_STRING_ARRAY, &exports, "Export file", "file" },
+  { NULL }
+};
+
 int
 main (int argc, char *argv[])
 {
@@ -793,47 +813,45 @@ main (int argc, char *argv[])
   Slice *slice;
   Bundle *bundle;
   GError *error;
-  GKeyFile *config;
-  char *id, *version, *exec;
-  char **exports;
+  GOptionContext *context;
 
   g_type_init ();
 
-  if (argc != 4) {
-    g_printerr ("Usage: glick-mkbundle <description> <dir> <filename>\n");
-    return 1;
-  }
-
   error = NULL;
-  config = g_key_file_new ();
-  if (!g_key_file_load_from_file (config, argv[1],G_KEY_FILE_NONE, &error)) {
-    g_printerr ("Can't open bundle description: %s\n", error->message);
-    return 1;
-  }
-
-  id = g_key_file_get_string (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_ID, &error);
-  if (id == NULL)
+  context = g_option_context_new ("DIR FILENAME - create glick bundle");
+  g_option_context_add_main_entries (context, entries, "glick");
+  if (!g_option_context_parse (context, &argc, &argv, &error))
     {
-      g_printerr ("No bundle id specified\n");
-      return 1;
+      g_print ("option parsing failed: %s\n", error->message);
+      exit (1);
     }
-  version = g_key_file_get_string (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_VERSION, &error);
-  if (version == NULL)
+
+  if (argc != 3)
     {
-      g_printerr ("No bundle version specified\n");
+      g_printerr ("%s", g_option_context_get_help (context, TRUE, NULL));
       return 1;
     }
 
-  bundle = bundle_new (id, version);
+  if (bundle_id == NULL)
+    {
+      g_printerr ("Bundle id required\n");
+      return 1;
+    }
 
-  exec = g_key_file_get_string (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_EXEC, &error);
-  if (exec)
-    bundle_set_default_executable (bundle, exec);
+  if (bundle_version == NULL)
+    {
+      g_printerr ("Bundle version required\n");
+      return 1;
+    }
 
-  root = slurp_files (argv[2], "/", "/");
+  bundle = bundle_new (bundle_id, bundle_version);
+
+  if (default_executable)
+    bundle_set_default_executable (bundle, default_executable);
+
+  root = slurp_files (argv[1], "/", "/");
 
   exports_root = NULL;
-  exports = g_key_file_get_string_list (config, BUNDLE_GROUP_NAME, BUNDLE_KEY_EXPORT, NULL, &error);
   if (exports != NULL)
     {
       gboolean replace;
@@ -852,7 +870,7 @@ main (int argc, char *argv[])
       bundle_add_slice (bundle, slice);
     }
 
-  f = g_file_new_for_commandline_arg (argv[3]);
+  f = g_file_new_for_commandline_arg (argv[2]);
 
   if (!bundle_write (bundle, f, &error)) {
     g_printerr ("Can't open output: %s\n", error->message);
