@@ -4,10 +4,10 @@ PREFIX=/usr/local
 BINDIR=${PREFIX}/bin
 LIBDIR=${PREFIX}/lib
 
-all: private-mount glick-runner to_c glick_fs create_bundle
+all: private-mount glick-runner glick_fs create_bundle makershared
 
 clean:
-	rm -f private-mount glick2 to_c glick_fs create_bundle
+	rm -f private-mount glick2 glick_fs create_bundle
 
 install: private-mount
 	install -m 4755 -o root private-mount ${BINDIR}
@@ -15,8 +15,8 @@ install: private-mount
 private-mount: private-mount.c
 	gcc -o private-mount private-mount.c ${CFLAGS}
 
-to_c: to_c.c
-	gcc -o to_c to_c.c ${CFLAGS}
+makershared: makershared.c
+	gcc -o makershared makershared.c ${CFLAGS}
 
 glick-runner: runner.c
 	gcc ${CFLAGS} `pkg-config fuse glib-2.0 --cflags --libs` runner.c -o glick-runner -DBINDIR=\"${BINDIR}\"

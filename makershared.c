@@ -10,7 +10,6 @@ int
 main (int argc,
       char **argv)
 {
-  int mount_count;
   int res;
 
   res = mount ("/", "/",
