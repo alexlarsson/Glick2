@@ -19,5 +19,6 @@ Makefile.in
 glick-helper
 glick-mkbundle
 glick-runner
-glick_fs
-makershared
+glick-fs
+glick-makershared
+glick2.conf
