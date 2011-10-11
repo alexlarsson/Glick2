@@ -45,6 +45,11 @@ if test "x$GCC" = "xyes"; then
   esac
 fi
 
-AC_HEADER_STDC
+AC_ARG_ENABLE(caches,
+		AS_HELP_STRING([--enable-caches],[Run update-* to update mime caches when installing [[default=yes]]]),
+		[enable_caches=$enableval],
+		[enable_caches="yes"])
+
+AM_CONDITIONAL(UPDATE_CACHES, test x"$enable_caches" = "xyes")
 
 AC_OUTPUT

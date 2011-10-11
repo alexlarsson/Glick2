@@ -57,3 +57,27 @@ ChangeLog:
 	  (echo A git checkout and git-log is required to generate ChangeLog >&2 && \
 	  echo A git checkout and git-log is required to generate this file >> $@); \
 	fi
+
+mimedir = $(datadir)/mime/packages
+mime_DATA = glick2.xml
+
+UPDATE_MIME = \
+	if [ -f $(DESTDIR)$(datadir)/mime/packages/freedesktop.org.xml ] ; then \
+		if which update-mime-database>/dev/null 2>&1; then \
+			update-mime-database $(DESTDIR)$(datadir)/mime; \
+		fi \
+	fi
+
+install-data-hook:
+if UPDATE_CACHES
+	$(UPDATE_MIME)
+else
+	@true
+endif
+
+uninstall-hook:
+if UPDATE_CACHES
+	$(UPDATE_MIME)
+else
+	@true
+endif
