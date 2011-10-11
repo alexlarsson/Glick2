@@ -12,7 +12,7 @@ bin_PROGRAMS =					\
 	glick-mkbundle				\
 	glick-runner				\
 	glick-fs				\
-	makershared				\
+	glick-makershared			\
 	$(NULL)
 
 libexec_PROGRAMS =				\
@@ -23,7 +23,7 @@ libexec_PROGRAMS =				\
 glick_helper_SOURCES = helper.c
 glick_helper_LDADD = $(GLIB_LIBS)
 
-makershared_SOURCES = makershared.c
+glick_makershared_SOURCES = makershared.c
 
 glick_runner_SOURCES = runner.c
 glick_runner_LDADD = $(GLIB_LIBS) $(FUSE_LIBS)
