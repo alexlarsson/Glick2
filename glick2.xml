@@ -5,5 +5,8 @@
      <comment>Glick2 bundle</comment>
      <generic-icon name="application-x-executable"/>
      <glob pattern="*.bundle"/>
+     <magic priority="50">
+       <match type="string" value="\x8cGLK\x0d\x0a\x1a\x0a" offset="0"/>
+     </magic>
    </mime-type>
 </mime-info>
