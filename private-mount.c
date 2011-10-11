@@ -131,7 +131,6 @@ main (int argc,
     goto oom;
 
   j = 0;
-  child_argv[j++] = executable;
   for (i = argv_offset; i < argc; i++)
     child_argv[j++] = argv[i];
   child_argv[j++] = NULL;

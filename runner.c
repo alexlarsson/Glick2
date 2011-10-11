@@ -310,7 +310,8 @@ main (int argc, char *argv[])
   GlickBundleHeader *header;
   char *data;
   gsize header_size;
-  char *exec, *relative_exec;
+  char *default_executable;
+  char *exec, *argv0;
 
   if (argc < 2)
     {
@@ -334,20 +335,11 @@ main (int argc, char *argv[])
 
   header = (GlickBundleHeader *)data;
 
-  exec = "/bin/sh";
+  default_executable = NULL;
   if (header->exec_offset != 0)
-    {
-      relative_exec =
-	g_strndup (data + GUINT32_FROM_LE (header->exec_offset),
-		   GUINT32_FROM_LE (header->exec_size));
-      if (*relative_exec == '/')
-	exec = relative_exec;
-      else
-	{
-	  exec = g_build_filename ("/opt/glick", relative_exec, NULL);
-	  g_free (relative_exec);
-	}
-    }
+    default_executable =
+      g_strndup (data + GUINT32_FROM_LE (header->exec_offset),
+		 GUINT32_FROM_LE (header->exec_size));
 
   munmap (data, header_size);
 
@@ -400,11 +392,21 @@ main (int argc, char *argv[])
   pid = fork ();
   if (pid == 0)
     {
+      size_t arg_len;
+      char *bundle = g_strdup (argv[1]);
+
+      arg_len = argv[argc-1] + strlen (argv[argc-1]) - argv[0];
+
+      memset (argv[0], 0, arg_len);
+      argv[0][arg_len] = 'x';
+      snprintf (argv[0], arg_len, "glick-watcher [%s]", bundle);
+      g_free (bundle);
+
       close (fuse_mounted_pipe[READ_SIDE]);
       close (internal_mount_done_pipe[WRITE_SIDE]);
 
       setpgid (0, 0);
-      return run_dummy_fs (argv[0], dummy_mountpoint, fuse_mounted_pipe[WRITE_SIDE], internal_mount_done_pipe[READ_SIDE]);
+      return run_dummy_fs ("glick-dummy", dummy_mountpoint, fuse_mounted_pipe[WRITE_SIDE], internal_mount_done_pipe[READ_SIDE]);
     }
 
   close (socket_fd);
@@ -415,8 +417,28 @@ main (int argc, char *argv[])
   res = read (fuse_mounted_pipe[READ_SIDE], &b, 1);
   close (fuse_mounted_pipe[READ_SIDE]);
 
+  snprintf (fd_buf, sizeof (fd_buf), "%d", internal_mount_done_pipe[WRITE_SIDE]);
+  fd_buf[sizeof(fd_buf)] = 0; // Ensure zero termination
+
+  exec = "/bin/sh";
+  argv0 = NULL;
+  if (default_executable)
+    {
+      g_print ("default_executable: %s\n", default_executable);
+      if (*default_executable == '/')
+	exec = default_executable;
+      else
+	{
+	  exec = g_build_filename (glick_subdir, default_executable, NULL);
+	  argv0 = argv[1];
+	}
+    }
+
+  if (argv0 == NULL)
+    argv0 = exec;
+
   /* Spawn the make-private-namespace handler */
-  child_argv = malloc ((1 + 5 + (argc - 1) + 1 ) * sizeof (char *));
+  child_argv = malloc ((1 + 5 + (argc) + 1 ) * sizeof (char *));
   i = 0;
   child_argv[i++] = BINDIR "/private-mount";
   child_argv[i++] = glick_subdir;
@@ -426,12 +448,12 @@ main (int argc, char *argv[])
   child_argv[i++] = "-extra";
   child_argv[i++] = dummy_mountpoint;
   child_argv[i++] = "-fd";
-
-  snprintf (fd_buf, sizeof (fd_buf), "%d", internal_mount_done_pipe[WRITE_SIDE]);
-  fd_buf[sizeof(fd_buf)] = 0; // Ensure zero termination
   child_argv[i++] = fd_buf;
+
+  child_argv[i++] = argv0;
   for (j = 2; j < argc; j++)
     child_argv[i++] = argv[j];
+
   child_argv[i++] = NULL;
 
   setenv ("BUNDLE_PREFIX", glick_subdir, TRUE);
