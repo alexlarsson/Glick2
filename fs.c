@@ -103,6 +103,12 @@ typedef struct {
   guint32 id;
 } GlickPublic;
 
+typedef struct {
+  char *path;
+  GFileMonitor *monitor;
+  GList *publics;
+} GlickPublicDir;
+
 typedef struct _GlickInode GlickInode;
 struct _GlickInode {
   int ref_count;
@@ -2847,7 +2853,7 @@ find_public_for_file (GList *list, const char *path)
 }
 
 static void
-scan_public_directory (const char *path)
+public_dir_scan (GlickPublicDir *public_dir)
 {
   GDir *dir;
   const char *child_name;
@@ -2855,11 +2861,14 @@ scan_public_directory (const char *path)
   GList *publics;
   struct stat statbuf;
   GlickPublic *old_public;
+  GlickPublic *public;
   GList *l;
 
-  publics = g_list_copy (glick_publics);
+  g_print ("public_dir_scan %s\n", public_dir->path);
 
-  dir = g_dir_open (path, 0, NULL);
+  publics = g_list_copy (public_dir->publics);
+
+  dir = g_dir_open (public_dir->path, 0, NULL);
   if (dir != NULL)
     {
       while ((child_name = g_dir_read_name (dir)) != NULL)
@@ -2867,7 +2876,7 @@ scan_public_directory (const char *path)
 	  if (*child_name == '.')
 	    continue;
 
-	  child_path = g_build_filename (path, child_name, NULL);
+	  child_path = g_build_filename (public_dir->path, child_name, NULL);
 
 	  if (stat (child_path, &statbuf) == 0 &&
 	      S_ISREG (statbuf.st_mode))
@@ -2875,7 +2884,8 @@ scan_public_directory (const char *path)
 	      old_public = find_public_for_file (publics, child_path);
 	      if (old_public == NULL)
 		{
-		  glick_public_new (child_path);
+		  public = glick_public_new (child_path);
+		  public_dir->publics = g_list_prepend (public_dir->publics, public);
 		}
 	      else
 		{
@@ -2883,8 +2893,10 @@ scan_public_directory (const char *path)
 
 		  if (old_public->mtime != statbuf.st_mtime)
 		    {
+		      public_dir->publics = g_list_remove (public_dir->publics, old_public);
 		      glick_public_free (old_public);
-		      glick_public_new (child_path);
+		      public = glick_public_new (child_path);
+		      public_dir->publics = g_list_prepend (public_dir->publics, public);
 		    }
 		}
 	    }
@@ -2897,9 +2909,43 @@ scan_public_directory (const char *path)
   for (l = publics; l != NULL; l = l->next)
     {
       old_public = l->data;
+      public_dir->publics = g_list_remove (public_dir->publics, old_public);
       glick_public_free (old_public);
     }
   g_list_free (publics);
+}
+
+static void
+public_dir_changed (GFileMonitor      *monitor,
+		    GFile             *file,
+		    GFile             *other_file,
+		    GFileMonitorEvent  event_type,
+		    GlickPublicDir *public_dir)
+{
+  if (event_type == G_FILE_MONITOR_EVENT_CREATED ||
+      event_type == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT ||
+      event_type == G_FILE_MONITOR_EVENT_DELETED)
+    {
+      public_dir_scan (public_dir);
+    }
+}
+
+static void
+add_public_dir (const char *dir)
+{
+  GlickPublicDir *public_dir;
+  GFile *f;
+
+  public_dir = g_new0 (GlickPublicDir, 1);
+  public_dir->path = g_strdup (dir);
+  f = g_file_new_for_path (public_dir->path);
+  public_dir->monitor =
+    g_file_monitor_directory (f, G_FILE_MONITOR_NONE,
+			      NULL, NULL);
+  g_object_unref (f);
+
+  public_dir_scan (public_dir);
+  g_signal_connect (public_dir->monitor, "changed", G_CALLBACK (public_dir_changed), public_dir);
 }
 
 static gboolean
@@ -3049,21 +3095,6 @@ static int set_one_signal_handler(int sig, void (*handler)(int))
   return TRUE;
 }
 
-static void
-bundles_dir_changed (GFileMonitor      *monitor,
-		     GFile             *file,
-		     GFile             *other_file,
-		     GFileMonitorEvent  event_type,
-		     char *bundle_dir)
-{
-  if (event_type == G_FILE_MONITOR_EVENT_CREATED ||
-      event_type == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT ||
-      event_type == G_FILE_MONITOR_EVENT_DELETED)
-    {
-      scan_public_directory (bundle_dir);
-    }
-}
-
 int
 main_loop (struct fuse_session *se)
 {
@@ -3094,16 +3125,7 @@ main_loop (struct fuse_session *se)
   g_io_add_watch (ready_pipe_channel, G_IO_IN, ready_pipe_cb, ready_pipe_channel);
 
   bundle_dir = g_build_filename (g_get_home_dir (), BUNDLES_DIR, NULL);
-  scan_public_directory (bundle_dir);
-
-  {
-    GFile *f = g_file_new_for_path (bundle_dir);
-    GFileMonitor *monitor =
-      g_file_monitor_directory (f, G_FILE_MONITOR_NONE,
-				NULL, NULL);
-
-    g_signal_connect (monitor, "changed", G_CALLBACK (bundles_dir_changed), bundle_dir);
-  }
+  add_public_dir (bundle_dir);
 
   g_main_loop_run (mainloop);
 
