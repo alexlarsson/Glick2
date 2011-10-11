@@ -800,7 +800,7 @@ main (int argc, char *argv[])
   g_type_init ();
 
   if (argc != 4) {
-    g_printerr ("Usage: create_bundle <description> <dir> <filename>\n");
+    g_printerr ("Usage: glick-mkbundle <description> <dir> <filename>\n");
     return 1;
   }
 

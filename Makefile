@@ -5,10 +5,10 @@ BINDIR=${PREFIX}/bin
 LIBEXECDIR=${PREFIX}/libexec
 LIBDIR=${PREFIX}/lib
 
-all: glick-helper glick-runner glick_fs create_bundle makershared
+all: glick-helper glick-runner glick_fs glick-mkbundle makershared
 
 clean:
-	rm -f glick-helper glick2 glick_fs create_bundle
+	rm -f glick-helper glick2 glick_fs glick-mkbundle
 
 install: glick-helper
 	install -m 4755 -o root glick-helper ${LIBEXECDIR}
@@ -25,5 +25,5 @@ glick-runner: runner.c
 glick_fs: glick_fs.c glick.h
 	gcc ${CFLAGS} `pkg-config fuse glib-2.0 gthread-2.0 gio-2.0 --cflags --libs` glick_fs.c -o glick_fs
 
-create_bundle: create_bundle.c
-	gcc ${CFLAGS} `pkg-config glib-2.0 gio-2.0 --cflags --libs` create_bundle.c -o create_bundle
+glick-mkbundle: mkbundle.c
+	gcc ${CFLAGS} `pkg-config glib-2.0 gio-2.0 --cflags --libs` mkbundle.c -o glick-mkbundle
