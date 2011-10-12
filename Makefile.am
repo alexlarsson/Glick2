@@ -6,12 +6,14 @@ AM_CPPFLAGS =					\
 	$(GLIB_CFLAGS)				\
 	$(GIO_CFLAGS)				\
 	$(FUSE_CFLAGS)				\
+	$(X11_CFLAGS)				\
 	-DLIBEXECDIR=\"$(libexecdir)\"		\
 	-DBINDIR=\"$(bindir)\"			\
 	-DLIBDIR=\"$(libdir)\"			\
 	$(NULL)
 
 bin_PROGRAMS =					\
+	glick-launcher				\
 	glick-mkbundle				\
 	glick-runner				\
 	glick-fs				\
@@ -25,6 +27,9 @@ libexec_PROGRAMS =				\
 
 glick_helper_SOURCES = helper.c
 glick_helper_LDADD = $(GLIB_LIBS)
+
+glick_launcher_SOURCES = launcher.c
+glick_launcher_LDADD = $(GLIB_LIBS) $(X11_LIBS)
 
 glick_makershared_SOURCES = makershared.c
 
