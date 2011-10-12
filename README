@@ -1,0 +1,86 @@
+Short intruction to how glick works:
+
+There is a main fuse filesystem (glick-fs) that automatically mounts itself
+on ~/.glick when run. Inside this there is an "exports" directory where
+everything that gets exported from installed bundles are exposed. This means
+you should put things like ~/.glick/exports/share in your XDG_DATA_DIRS
+environment variable to get the desktop environment to pick this up.
+
+All this is easiest done with the glick-launcher app. Just add something
+like:
+
+  eval `glick-launcher --sh-syntax --exit-with-session`
+
+in your login scripts, similar to dbus-launch. This will start the
+filesystem, set the right environment variables and automatically
+unmount the filesystem at session exit.
+
+Additionally the exports directory has a ".bundles" subdirectory
+with symbolic links to all installed bundles. The idea is that we
+--bind mount the exports dir to a known location like /opt/session, and
+then exported files like desktop files can reference the bundle using an
+absolute path like /opt/session/.bundle/$bundle-id. Each mounted
+bundle also appears in the ~/.glick directory.
+
+glick-fs looks for installed bundles in ~/.local/bundles and $libdir/bundles. It
+also installs an inotify watch to pick up changes to these directories at
+runtime.
+
+Bundles are started by using the glick-runner binary, like:
+
+  glick-runner foo.bundle --args --for --app
+
+However, for easier use glick2 ships with a binfmt_misc config file
+that gets installed in $sysconfdir/glick2.conf. If your distribution
+supports this that means you only need to make sure your bundles
+have execute permissions and you can launch them directly.
+
+Bundles list a default executable in the metadata, but you can also
+start other executables inside the bundle like:
+ glick-runner foo.bundle -exec bin/alt_app --some --args
+or
+ ./foo.bundle -exec bin/alt_app --some --args
+
+When a bundle is started it connects to the glick filesystem, requesting
+the bundle to be mounted (by opening ~/.glick/socket and passing the open
+fd to it), and then the setuid helper $libexecdir/glick-helper creates
+a new mount namespace for the bundle process and binds mounts /opt/bundle to
+the ~/.glick/<subdir> where the bundle gets mounted. This means you can
+build your bundles with a static prefix of /opt/bundle and each bundle
+instance will see its files there. When the last process in the bundle
+exits the bundle will automatically be unmounted.
+
+In order for the bundle mount namespace to pick up new mounts in the root
+mount namespace you have to make the root (or some subset) to "rshared" in the
+root namespace. This should typically be done with:
+  mount --make-rshared mountpoint
+But that didn't work for me, so glick ships with a glick-makershared binary
+that does this.
+
+Bundles are created with the glick-mkbundle program. You pass it a directory
+and a filename, and it will create a bundle containing all the files in
+the directory. Additionally you have to specify a bundle id and a version.
+Bundle ids look like dbus/java style reverse dns names (org.domain.my.MyApp) and
+version is supposed to be an rpm-style version string.
+
+Additionally you can specify a set of exports which is files that should be
+put in the "exports" dir when the bundle is installed. Typically things like
+desktop files, app icons and custom mimetypes. There are some built in triggers
+inside glick that will automatically do things like rebuild icon caches and
+mime databases when files are added in the right directories.
+
+So, a typical bundle creation would be something like:
+./configure --prefix=/opt/bundle
+make
+make install DESTDIR=/tmp
+glick-mkbundle -i org.gnome.App -v 1.1.2 -e bin/the_app \
+   -E /share/mime-info -E /share/icons -E /share/applications \
+   /tmp/opt/bundle app.bundle
+
+Although, ideally when building a set of bundles common binaries for
+dependencies should be used to maximize file sharing between bundles.
+
+Sometimes an application might need to let another application read its files,
+for instance the system help reader might want to read the help files. For this
+reason glick always sets the BUNDLE_PREFIX environment variable to
+a path where other processes outside of the bundle mount namespace can access them.
