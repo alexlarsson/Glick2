@@ -2885,7 +2885,8 @@ public_dir_scan (GlickPublicDir *public_dir)
 	      if (old_public == NULL)
 		{
 		  public = glick_public_new (child_path);
-		  public_dir->publics = g_list_prepend (public_dir->publics, public);
+		  if (public)
+		    public_dir->publics = g_list_prepend (public_dir->publics, public);
 		}
 	      else
 		{
@@ -2896,7 +2897,8 @@ public_dir_scan (GlickPublicDir *public_dir)
 		      public_dir->publics = g_list_remove (public_dir->publics, old_public);
 		      glick_public_free (old_public);
 		      public = glick_public_new (child_path);
-		      public_dir->publics = g_list_prepend (public_dir->publics, public);
+		      if (public)
+			public_dir->publics = g_list_prepend (public_dir->publics, public);
 		    }
 		}
 	    }
