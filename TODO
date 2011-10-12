@@ -1,0 +1,8 @@
+Support access() in glick-fs
+Do file writes in threads
+Allow multiple threads to to read-only metadata lookups
+Only allow one exported version for each bundle id (the latest)
+Do we need to ship some script to set up / rshared
+Support compressed files
+Add bloom table for hash lookups
+Use hash-split for file data
