@@ -98,7 +98,7 @@ edit = sed \
 	-e 's|@prefix[@]|$(prefix)|g'
 
 binfmtdir = ${sysconfdir}/binfmt.d
-binfmt_SCRIPTS = glick2.conf
+binfmt_DATA = glick2.conf
 
 # Binfmt config file
 glick2.conf: Makefile glick2.conf.in
