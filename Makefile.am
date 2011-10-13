@@ -13,7 +13,6 @@ AM_CPPFLAGS =					\
 	$(NULL)
 
 bin_PROGRAMS =					\
-	glick-launcher				\
 	glick-session-launcher			\
 	glick-mkbundle				\
 	glick-runner				\
@@ -28,9 +27,6 @@ libexec_PROGRAMS =				\
 
 glick_helper_SOURCES = helper.c
 glick_helper_LDADD = $(GLIB_LIBS)
-
-glick_launcher_SOURCES = launcher.c
-glick_launcher_LDADD = $(GLIB_LIBS) $(X11_LIBS)
 
 glick_session_launcher_SOURCES = session.c
 
