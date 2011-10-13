@@ -55,4 +55,11 @@ AC_ARG_ENABLE(caches,
 
 AM_CONDITIONAL(UPDATE_CACHES, test x"$enable_caches" = "xyes")
 
+AC_ARG_ENABLE(setuid-install,
+		AS_HELP_STRING([--disable-setuid-install],[Don't set setuid flags on binaries during install]),
+		[enable_setuid_install=$enableval],
+		[enable_setuid_install="yes"])
+
+AM_CONDITIONAL(SETUID_INSTALL, test x"$enable_setuid_install" = "xyes")
+
 AC_OUTPUT

@@ -42,11 +42,13 @@ install-data-local:
 	$(mkinstalldirs) $(DESTDIR)$(BUNDLE_PREFIX)
 	$(mkinstalldirs) $(DESTDIR)$(SESSION_PREFIX)
 
+if SETUID_INSTALL
 install-exec-hook:
 	chown root $(DESTDIR)$(libexecdir)/glick-helper
 	chmod 4755 $(DESTDIR)$(libexecdir)/glick-helper
 	chown root $(DESTDIR)$(bindir)/glick-session
 	chmod 4755 $(DESTDIR)$(bindir)/glick-session
+endif
 
 ChangeLog:
 	$(AM_V_GEN) if test -d "$(srcdir)/.git"; then \
@@ -113,3 +115,5 @@ glick.desktop: Makefile glick.desktop.in
 	mv $@.tmp $@
 
 EXTRA_DIST=glick2.conf.in glick.desktop.in glick2.xml
+
+DISTCHECK_CONFIGURE_FLAGS=--disable-setuid-install
