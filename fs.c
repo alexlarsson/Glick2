@@ -186,6 +186,8 @@ struct _GlickThreadOp {
 #define ENTRY_CACHE_TIMEOUT_SEC 10000
 #define ATTR_CACHE_TIMEOUT_SEC 10000
 
+static gboolean die_with_session = FALSE;
+
 static GlickInodeDir *glick_root;
 static GlickInodeDir *glick_bundles_dir;
 static GHashTable *glick_inodes; /* inode -> GlickInode */
@@ -3199,16 +3201,35 @@ sha1_digest_hash (gconstpointer  key)
   return *p;
 }
 
+static void
+session_bus_died (GDBusConnection *connection,
+		  gboolean         remote_peer_vanished,
+		  GError          *error)
+{
+  g_main_loop_quit (mainloop);
+}
+
 int
 main (int argc, char *argv[])
 {
-  struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+  struct fuse_args args = FUSE_ARGS_INIT(1, argv);
   struct fuse_chan *ch;
   int err = -1;
   const char *homedir;
 
   g_thread_init (NULL);
   g_type_init ();
+
+  if (argc > 1)
+    {
+      if (strcmp (argv[1], "--exit-with-session") == 0)
+	die_with_session = TRUE;
+      else
+	{
+	  g_printerr ("Unknown argument %s\n", argv[1]);
+	  return 1;
+	}
+    }
 
   glick_thread_pool = g_thread_pool_new (thread_pool_func, NULL, 20,
 					 FALSE, NULL);
@@ -3229,6 +3250,20 @@ main (int argc, char *argv[])
   homedir = g_get_home_dir ();
   glick_mountpoint = g_build_filename (homedir, ".glick", NULL);
   mkdir (glick_mountpoint, 0700);
+
+  if (die_with_session)
+    {
+      GDBusConnection *connection;
+      connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+      if (connection == NULL)
+	{
+	  g_printerr ("Unable to connect to session bus, but --die-with-session specified\n");
+	  return 1;
+	}
+      g_dbus_connection_set_exit_on_close (connection, FALSE);
+      g_signal_connect (connection, "closed",
+			G_CALLBACK (session_bus_died), NULL);
+    }
 
   if ((ch = fuse_mount (glick_mountpoint, NULL)) != NULL)
     {
