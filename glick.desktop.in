@@ -1,0 +1,7 @@
+[Desktop Entry]
+Version=1.0
+Name=Glick filesystem
+Exec=@bindir@/glick-fs
+StartupNotify=false
+Type=Application
+Categories=System;Utility;

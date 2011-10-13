@@ -108,5 +108,15 @@ glick2.conf: Makefile glick2.conf.in
 	  $(edit) $${srcdir}$@.in >$@.tmp
 	mv $@.tmp $@
 
+# Autostart file
+desktopdir = $(sysconfdir)/xdg/autostart
+desktop_DATA = glick.desktop
 
-EXTRA_DIST=glick2.conf.in
+glick.desktop: Makefile glick.desktop.in
+	rm -f $@ $@.tmp
+	srcdir=''; \
+	  test -f ./$@.in || srcdir=$(srcdir)/; \
+	  $(edit) $${srcdir}$@.in >$@.tmp
+	mv $@.tmp $@
+
+EXTRA_DIST=glick2.conf.in glick.desktop.in
