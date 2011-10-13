@@ -117,3 +117,5 @@ glick.desktop: Makefile glick.desktop.in
 EXTRA_DIST=glick2.conf.in glick.desktop.in glick2.xml
 
 DISTCHECK_CONFIGURE_FLAGS=--disable-setuid-install
+
+CLEANFILES=glick2.conf glick.desktop
