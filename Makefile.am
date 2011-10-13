@@ -14,6 +14,7 @@ AM_CPPFLAGS =					\
 
 bin_PROGRAMS =					\
 	glick-launcher				\
+	glick-session-launcher			\
 	glick-mkbundle				\
 	glick-runner				\
 	glick-fs				\
@@ -30,6 +31,8 @@ glick_helper_LDADD = $(GLIB_LIBS)
 
 glick_launcher_SOURCES = launcher.c
 glick_launcher_LDADD = $(GLIB_LIBS) $(X11_LIBS)
+
+glick_session_launcher_SOURCES = session.c
 
 glick_makershared_SOURCES = makershared.c
 
@@ -49,6 +52,8 @@ install-data-local:
 install-exec-hook:
 	chown root $(DESTDIR)$(libexecdir)/glick-helper
 	chmod 4755 $(DESTDIR)$(libexecdir)/glick-helper
+	chown root $(DESTDIR)$(libexecdir)/glick-session-launcher
+	chmod 4755 $(DESTDIR)$(libexecdir)/glick-session-launcher
 
 ChangeLog:
 	$(AM_V_GEN) if test -d "$(srcdir)/.git"; then \
