@@ -22,9 +22,6 @@ PKG_CHECK_MODULES(GIO, [$gio_modules])
 fuse_modules="fuse"
 PKG_CHECK_MODULES(FUSE, [$fuse_modules])
 
-x11_modules="x11"
-PKG_CHECK_MODULES(X11, [$x11_modules])
-
 AC_ARG_WITH(bundle_prefix,
 	AS_HELP_STRING([--with-bundle-prefix=DIR],[Prefix used for bundles @<:@/opt/bundle@:>@]),
 	[ac_with_bundle_prefix=$withval],

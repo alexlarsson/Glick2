@@ -6,7 +6,6 @@ AM_CPPFLAGS =					\
 	$(GLIB_CFLAGS)				\
 	$(GIO_CFLAGS)				\
 	$(FUSE_CFLAGS)				\
-	$(X11_CFLAGS)				\
 	-DLIBEXECDIR=\"$(libexecdir)\"		\
 	-DBINDIR=\"$(bindir)\"			\
 	-DLIBDIR=\"$(libdir)\"			\
