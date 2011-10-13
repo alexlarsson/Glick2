@@ -82,6 +82,55 @@ mount_bind (const char *src, const char *dest)
   return mount (src, dest, NULL, MS_BIND, NULL);
 }
 
+char *
+strconcat (const char *s1,
+	   const char *s2,
+	   const char *s3)
+{
+  size_t len = 0;
+  char *res;
+
+  if (s1)
+    len += strlen (s1);
+  if (s2)
+    len += strlen (s2);
+  if (s3)
+    len += strlen (s3);
+
+  res = malloc (len + 1);
+  if (res == NULL)
+    return NULL;
+
+  *res = 0;
+  if (s1)
+    strcat (res, s1);
+  if (s2)
+    strcat (res, s2);
+  if (s3)
+    strcat (res, s3);
+
+  return res;
+}
+
+static void
+update_env_var (const char *var, const char *dir, const char *default_dir)
+{
+  const char *env;
+  char *value;
+
+  env = getenv (var);
+  if (env == NULL || *env == 0)
+    value = strconcat (dir, ":", default_dir);
+  else
+    value = strconcat (dir, ":", env);
+
+  if (value != NULL)
+    {
+      setenv (var, value, 1);
+      free (value);
+    }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -192,6 +241,10 @@ main(int argc, char **argv)
   make_symlink (session_dir, "exports",
 		homedir, ".glick/exports");
   
+
+  update_env_var ("XDG_CONFIG_DIRS", SESSION_PREFIX "/exports/etc", "/etc/xdg");
+  update_env_var ("XDG_DATA_DIRS",  SESSION_PREFIX "/exports/share", "/usr/share");
+
   return execvp (argv[1], argv+1);
  error:
   /* Now we have everything we need CAP_SYS_ADMIN for, so drop setuid */
