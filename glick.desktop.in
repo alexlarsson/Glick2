@@ -1,7 +1,7 @@
 [Desktop Entry]
 Version=1.0
 Name=Glick filesystem
-Exec=@bindir@/glick-fs
+Exec=@bindir@/glick-fs --exit-with-session
 StartupNotify=false
 Type=Application
 Categories=System;Utility;
