@@ -113,7 +113,7 @@ glick.desktop: Makefile glick.desktop.in
 	  $(edit) $${srcdir}$@.in >$@.tmp
 	mv $@.tmp $@
 
-EXTRA_DIST=glick2.conf.in glick.desktop.in glick2.xml
+EXTRA_DIST=glick2.conf.in glick.desktop.in glick2.xml glick2.spec
 
 DISTCHECK_CONFIGURE_FLAGS=--disable-setuid-install
 
