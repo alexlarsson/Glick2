@@ -1,5 +1,7 @@
 #define FUSE_USE_VERSION 26
 
+#include "config.h"
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
