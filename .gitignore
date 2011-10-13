@@ -1,3 +1,4 @@
+*~
 *.o
 .deps
 /aclocal.m4
@@ -20,6 +21,6 @@ glick-helper
 glick-mkbundle
 glick-runner
 glick-fs
-glick-makershared
 glick2.conf
-glick-launcher
+glick-session
+glick.desktop
