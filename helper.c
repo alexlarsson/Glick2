@@ -9,6 +9,55 @@
 #include <stdlib.h>
 #include <errno.h>
 
+char *
+strconcat (const char *s1,
+	   const char *s2,
+	   const char *s3)
+{
+  size_t len = 0;
+  char *res;
+
+  if (s1)
+    len += strlen (s1);
+  if (s2)
+    len += strlen (s2);
+  if (s3)
+    len += strlen (s3);
+
+  res = malloc (len + 1);
+  if (res == NULL)
+    return NULL;
+
+  *res = 0;
+  if (s1)
+    strcat (res, s1);
+  if (s2)
+    strcat (res, s2);
+  if (s3)
+    strcat (res, s3);
+
+  return res;
+}
+
+static void
+update_env_var_list (const char *var, const char *item)
+{
+  const char *env;
+  char *value;
+
+  env = getenv (var);
+  if (env == NULL || *env == 0)
+    {
+      setenv (var, item, 1);
+    }
+  else
+    {
+      value = strconcat (item, ":", env);
+      setenv (var, value, 1);
+      free (value);
+    }
+}
+
 int
 main (int argc,
       char **argv)
@@ -134,6 +183,8 @@ main (int argc,
   for (i = argv_offset; i < argc; i++)
     child_argv[j++] = argv[i];
   child_argv[j++] = NULL;
+
+  update_env_var_list ("LD_LIBRARY_PATH", BUNDLE_PREFIX "/lib");
 
   return execv (executable, child_argv);
 
