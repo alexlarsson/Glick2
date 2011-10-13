@@ -13,7 +13,7 @@ AM_CPPFLAGS =					\
 	$(NULL)
 
 bin_PROGRAMS =					\
-	glick-session-launcher			\
+	glick-session				\
 	glick-mkbundle				\
 	glick-runner				\
 	glick-fs				\
@@ -27,7 +27,7 @@ libexec_PROGRAMS =				\
 glick_helper_SOURCES = helper.c
 glick_helper_LDADD = $(GLIB_LIBS)
 
-glick_session_launcher_SOURCES = session.c
+glick_session_SOURCES = session.c
 
 glick_runner_SOURCES = runner.c
 glick_runner_LDADD = $(GLIB_LIBS) $(FUSE_LIBS)
@@ -45,8 +45,8 @@ install-data-local:
 install-exec-hook:
 	chown root $(DESTDIR)$(libexecdir)/glick-helper
 	chmod 4755 $(DESTDIR)$(libexecdir)/glick-helper
-	chown root $(DESTDIR)$(bindir)/glick-session-launcher
-	chmod 4755 $(DESTDIR)$(bindir)/glick-session-launcher
+	chown root $(DESTDIR)$(bindir)/glick-session
+	chmod 4755 $(DESTDIR)$(bindir)/glick-session
 
 ChangeLog:
 	$(AM_V_GEN) if test -d "$(srcdir)/.git"; then \
