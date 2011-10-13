@@ -1,0 +1,26 @@
+diff -up xinit/xinitrc-common.glick xinit/xinitrc-common
+--- xinit/xinitrc-common.glick	2011-10-13 19:50:50.545489009 +0200
++++ xinit/xinitrc-common	2011-10-13 19:51:33.272927085 +0200
+@@ -67,3 +67,8 @@ CK_XINIT_SESSION=
+ if [ -z "$XDG_SESSION_COOKIE" ] && [ -x /usr/bin/ck-xinit-session ]; then
+     CK_XINIT_SESSION="/usr/bin/ck-xinit-session"
+ fi
++
++GLICK_SESSION=
++if  [ -x /usr/bin/glick-session ]; then
++    GLICK_SESSION="/usr/bin/glick-session"
++fi
+diff -up xinit/Xsession.glick xinit/Xsession
+--- xinit/Xsession.glick	2011-10-13 19:50:55.673542111 +0200
++++ xinit/Xsession	2011-10-13 20:04:48.073676526 +0200
+@@ -57,8 +57,8 @@ case $# in
+ 	gnome|gnome-session)
+ 	    # lack of SSH_AGENT is intentional, see #441123.  though
+ 	    # the whole thing should really happen in xinitrc.d anyway.
+-	    exec -l $SHELL -c gnome-session
+-	    exec /bin/sh -c "exec -l $SHELL -c \"gnome-session\"" 
++	    exec -l $SHELL -c "$GLICK_SESSION gnome-session"
++	    exec /bin/sh -c "exec -l $SHELL -c \"$GLICK_SESSION gnome-session\"" 
+ 	    ;;
+ 	kde|kde1|kde2)
+ 	    exec $CK_XINIT_SESSION $SSH_AGENT /bin/sh -c "exec -l $SHELL -c \"startkde\""
