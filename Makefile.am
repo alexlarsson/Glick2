@@ -52,8 +52,8 @@ install-data-local:
 install-exec-hook:
 	chown root $(DESTDIR)$(libexecdir)/glick-helper
 	chmod 4755 $(DESTDIR)$(libexecdir)/glick-helper
-	chown root $(DESTDIR)$(libexecdir)/glick-session-launcher
-	chmod 4755 $(DESTDIR)$(libexecdir)/glick-session-launcher
+	chown root $(DESTDIR)$(bindir)/glick-session-launcher
+	chmod 4755 $(DESTDIR)$(bindir)/glick-session-launcher
 
 ChangeLog:
 	$(AM_V_GEN) if test -d "$(srcdir)/.git"; then \
