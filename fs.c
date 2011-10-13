@@ -249,7 +249,7 @@ static void glick_inode_dir_remove_all_children (GlickInodeDir *dir);
 static gboolean glick_inode_is_owned (GlickInode *inode);
 void glick_mount_real_remove_slice (GlickMount *mount, GlickSlice *slice);
 
-#if 1
+#if 0
 #define __debug__(x) g_print x
 #else
 #define __debug__(x)
@@ -2867,8 +2867,6 @@ public_dir_scan (GlickPublicDir *public_dir)
   GlickPublic *old_public;
   GlickPublic *public;
   GList *l;
-
-  g_print ("public_dir_scan %s\n", public_dir->path);
 
   publics = g_list_copy (public_dir->publics);
 
