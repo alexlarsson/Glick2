@@ -29,13 +29,13 @@ glick_helper_LDADD = $(GLIB_LIBS)
 
 glick_session_SOURCES = session.c
 
-glick_runner_SOURCES = runner.c
+glick_runner_SOURCES = runner.c format.h glick.h
 glick_runner_LDADD = $(GLIB_LIBS) $(FUSE_LIBS)
 
-glick_fs_SOURCES = fs.c
+glick_fs_SOURCES = fs.c format.h glick.h
 glick_fs_LDADD = $(GIO_LIBS) $(FUSE_LIBS)
 
-glick_mkbundle_SOURCES = mkbundle.c
+glick_mkbundle_SOURCES = mkbundle.c format.h
 glick_mkbundle_LDADD = $(GIO_LIBS)
 
 install-data-local:
@@ -112,4 +112,4 @@ glick.desktop: Makefile glick.desktop.in
 	  $(edit) $${srcdir}$@.in >$@.tmp
 	mv $@.tmp $@
 
-EXTRA_DIST=glick2.conf.in glick.desktop.in
+EXTRA_DIST=glick2.conf.in glick.desktop.in glick2.xml
