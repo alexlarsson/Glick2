@@ -1,5 +1,5 @@
 AC_PREREQ([2.67])
-AC_INIT([glick],[2.0])
+AC_INIT([glick2],[0.0.1])
 AC_CONFIG_SRCDIR([mkbundle.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
