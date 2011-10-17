@@ -58,6 +58,10 @@ update_env_var_list (const char *var, const char *item)
     }
 }
 
+#ifndef MS_PRIVATE      /* May not be defined in older glibc headers */
+#define MS_PRIVATE (1<<18) /* change to private */
+#endif
+
 int
 main (int argc,
       char **argv)

@@ -11,6 +11,14 @@
 #include <pwd.h>
 #include <sched.h>
 
+#ifndef MS_REC          /* May not be defined in older glibc headers */
+#define MS_REC 16384
+#endif
+
+#ifndef MS_SHARED       /* May not be defined in older glibc headers */
+#define MS_SHARED (1<<20) /* change to shared */
+#endif
+
 static const char *
 get_homedir (void)
 {
