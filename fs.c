@@ -1,4 +1,5 @@
 #define FUSE_USE_VERSION 26
+#define _XOPEN_SOURCE 500
 
 #include "config.h"
 
